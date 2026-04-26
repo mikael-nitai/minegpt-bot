@@ -13,6 +13,7 @@ O bot ja possui:
 - aliases em portugues para alvos comuns;
 - gerenciamento de inventario, hotbar, mao e drop de itens;
 - coleta/mineracao de blocos percebidos;
+- colocacao segura de blocos simples no mundo;
 - busca manual e automatica de drops;
 - crafting direto seguro e cadeia curta para itens basicos;
 - Survival Guard com diagnostico, pedidos de ajuda, comida automatica e reacoes curtas;
@@ -127,6 +128,25 @@ Exemplos:
 - `pegar drops`
 - `pegar coal`
 
+### Colocar blocos
+
+- `blocos`
+- `colocar BLOCO`
+- `colocar BLOCO na frente`
+- `colocar BLOCO abaixo`
+- `colocar BLOCO perto de mim`
+- `colocar BLOCO em X Y Z`
+
+Exemplos:
+
+- `blocos`
+- `colocar dirt`
+- `colocar cobblestone na frente`
+- `colocar bloco abaixo`
+- `colocar dirt em 10 64 -20`
+
+A skill usa apenas blocos existentes no inventario, exige posicao livre, face de apoio valida, distancia curta ou navegavel, risco baixo e confirmacao do bloco colocado.
+
 ### Crafting
 
 - `crafting status`
@@ -171,6 +191,7 @@ Esses comandos expõem estado e skills registradas para a futura camada de lingu
 - `perception.js`: percepcao, tokens, attention scoring e agrupamento de blocos.
 - `survival.js`: Survival Guard, riscos e reacoes curtas.
 - `crafting.js`: crafting direto seguro e cadeia curta para itens basicos.
+- `placement.js`: colocacao segura de blocos simples.
 - `skills.js`: skill registry para futura IA/planner.
 - `action-result.js`: resultado padronizado de acoes.
 - `state.js`: snapshot estruturado do estado do bot.
@@ -182,7 +203,7 @@ Esses comandos expõem estado e skills registradas para a futura camada de lingu
 npm test
 ```
 
-Atualmente os testes verificam sintaxe e smoke tests de catalogo, inventario, skills e crafting.
+Atualmente os testes verificam sintaxe e smoke tests de catalogo, inventario, skills, crafting e colocacao de blocos.
 
 ## Seguranca e limitacoes
 

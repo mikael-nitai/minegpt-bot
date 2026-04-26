@@ -12,6 +12,7 @@ const { createSkillRegistry } = require('./skills')
 const { createStateReporter } = require('./state')
 const { actionOk, actionFail } = require('./action-result')
 const { createCraftingHelpers } = require('./crafting')
+const { createPlacementHelpers, parsePlaceCommand } = require('./placement')
 
 const CONFIG_PATH = path.join(__dirname, 'config.json')
 
@@ -74,6 +75,7 @@ let activeSkill = null
 let skillRegistry
 let stateReporter
 let craftingHelpers
+let placementHelpers
 
 const collectionState = {
   recent: [],
@@ -144,6 +146,23 @@ stateReporter = createStateReporter({
 craftingHelpers = createCraftingHelpers({
   getBot: () => bot,
   mcData,
+  catalog: minecraftCatalog,
+  inventory: inventoryHelpers,
+  goals,
+  withTimeout,
+  owner: config.owner,
+  getActiveSkill: () => activeSkill,
+  startSkill,
+  finishSkill,
+  assertSkillActive,
+  getNavigationController: () => navigationController,
+  getReconnecting: () => reconnecting,
+  survival: survivalGuard
+})
+
+placementHelpers = createPlacementHelpers({
+  getBot: () => bot,
+  Vec3,
   catalog: minecraftCatalog,
   inventory: inventoryHelpers,
   goals,
@@ -1247,6 +1266,17 @@ function setupSkillRegistry () {
   })
 
   registry.register({
+    id: 'blocks.place',
+    description: 'Coloca um bloco do inventario em uma posicao simples e segura.',
+    risk: 'medium',
+    timeoutMs: 18000,
+    inputSchema: { target: 'string', mode: 'front|below|near_owner|coords', coords: 'object optional' },
+    run: async ({ target = 'bloco', mode = 'front', coords = null }) => {
+      return placementHelpers.placeByRequest({ target, mode, coords, raw: target })
+    }
+  })
+
+  registry.register({
     id: 'survival.status',
     description: 'Consulta estado de sobrevivencia.',
     risk: 'low',
@@ -1639,6 +1669,11 @@ async function handleCommand (username, message) {
     return
   }
 
+  if (text === 'blocos') {
+    sendLongMessage(placementHelpers.describePlaceableBlocks())
+    return
+  }
+
   if (text.startsWith('receita ')) {
     sendLongMessage(craftingHelpers.describeRecipeByQuery(text.slice(8).trim()))
     return
@@ -1656,6 +1691,13 @@ async function handleCommand (username, message) {
 
     const result = await craftingHelpers.craftByQuery(target, requestedCount || 1)
     bot.chat(result.ok ? result.message : `Falha ao craftar: ${result.reason}`)
+    return
+  }
+
+  if (text.startsWith('colocar ')) {
+    const request = parsePlaceCommand(text.slice(8).trim())
+    const result = await placementHelpers.placeByRequest(request)
+    bot.chat(result.ok ? result.message : `Falha ao colocar: ${result.reason}`)
     return
   }
 
@@ -1800,6 +1842,7 @@ async function handleCommand (username, message) {
     bot.chat('Inventario: status, inventario, hotbar, mao, segure ITEM, drop ITEM [QTD], hotbar SLOT ITEM, coletas')
     bot.chat('Crafting: receita ITEM, crafting status, craft ITEM, craft N ITEM')
     bot.chat('Coleta: coletar ALVO, coletar N ALVO, pegar ALVO, pegar drops, drops on|off. Exemplos: coletar 5 stone, pegar pao')
+    bot.chat('Blocos: blocos, colocar BLOCO, colocar BLOCO na frente|abaixo|perto de mim|em X Y Z')
   }
 }
 
