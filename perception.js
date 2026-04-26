@@ -6,7 +6,8 @@ function createPerceptionHelpers ({
   isDroppedItemEntity,
   describeDroppedItemEntity,
   ownerMatches,
-  getEscapeDirections
+  getEscapeDirections,
+  getContainerMemory = null
 }) {
   const {
     resolveCatalogQuery,
@@ -37,7 +38,9 @@ function createPerceptionHelpers ({
     seguir: { danger: 1.4, resource: 0.2, navigation: 1.4, goal: 1.0, opportunity: 0.2 },
     coletar_madeira: { danger: 1.2, resource: 1.0, navigation: 0.8, goal: 1.8, opportunity: 0.6 },
     explorar: { danger: 1.3, resource: 1.0, navigation: 1.0, goal: 1.0, opportunity: 1.4 },
-    craftar: { danger: 1.1, resource: 0.9, navigation: 0.5, goal: 1.6, opportunity: 0.8 }
+    craftar: { danger: 1.1, resource: 0.9, navigation: 0.5, goal: 1.6, opportunity: 0.8 },
+    organizar: { danger: 1.1, resource: 0.5, navigation: 0.8, goal: 1.7, opportunity: 1.5 },
+    buscar_item: { danger: 1.2, resource: 0.8, navigation: 0.8, goal: 1.8, opportunity: 1.4 }
   }
 
   const hostileMobs = new Set([
@@ -57,7 +60,8 @@ function createPerceptionHelpers ({
     'crafting_table', 'furnace', 'blast_furnace', 'smoker', 'chest', 'trapped_chest',
     'barrel', 'bed', 'white_bed', 'orange_bed', 'magenta_bed', 'light_blue_bed',
     'yellow_bed', 'lime_bed', 'pink_bed', 'gray_bed', 'light_gray_bed', 'cyan_bed',
-    'purple_bed', 'blue_bed', 'brown_bed', 'green_bed', 'red_bed', 'black_bed'
+    'purple_bed', 'blue_bed', 'brown_bed', 'green_bed', 'red_bed', 'black_bed',
+    ...(catalog.blockCategories.container || [])
   ])
   const liquidBlocks = new Set(['water', 'lava'])
   const hazardBlocks = new Set(['lava', 'fire', 'soul_fire', 'magma_block', 'cactus', 'sweet_berry_bush'])
@@ -416,8 +420,33 @@ function createPerceptionHelpers ({
     const heads = { danger: 0, resource: 0, navigation: 0, goal: 0, opportunity: 0 }
     const reasons = []
     let category = 'block'
+    const extra = {}
 
-    if (utilityBlocks.has(block.name)) {
+    if (catalogBlockHasCategory(block.name, 'container')) {
+      category = 'container'
+      heads.resource = 35
+      heads.opportunity = 85
+      heads.goal = perceptionState.objective === 'organizar' || perceptionState.objective === 'buscar_item' ? 85 : 35
+      reasons.push('container abrivel')
+
+      const containerMemory = getContainerMemory?.()?.getMemoryEntryAt?.(block.position)
+      if (containerMemory) {
+        extra.containerKnown = true
+        extra.containerItems = containerMemory.itemNames || []
+        if (containerMemory.items?.length > 0) {
+          heads.resource += 10
+          heads.opportunity += 8
+          reasons.push(`memoria com ${containerMemory.items.length} tipo(s) de item`)
+        }
+        if (containerMemory.lastFailure) {
+          extra.cost = (extra.cost || 0) + 35
+          reasons.push('falha recente na memoria')
+        } else if (containerMemory.empty) {
+          extra.cost = (extra.cost || 0) + 12
+          reasons.push('memoria indica vazio')
+        }
+      }
+    } else if (utilityBlocks.has(block.name)) {
       category = 'utility_block'
       heads.resource = 40
       heads.opportunity = block.name.includes('chest') || block.name === 'barrel' ? 80 : 55
@@ -427,7 +456,7 @@ function createPerceptionHelpers ({
       return null
     }
 
-    return createToken('block', block.name, category, positionOf(block), distance, heads, reasons)
+    return createToken('block', block.name, category, positionOf(block), distance, heads, reasons, extra)
   }
 
   function detectFallHazards () {

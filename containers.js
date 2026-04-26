@@ -1,0 +1,802 @@
+const { actionOk, actionFail } = require('./action-result')
+
+const CONTAINER_SCAN_RADIUS = 16
+const CONTAINER_SCAN_VERTICAL = 4
+const MAX_CONTAINERS_PER_ACTION = 12
+const MAX_CONTAINER_MEMORY = 80
+const MEMORY_TTL_MS = 5 * 60 * 1000
+const RECENT_FAILURE_COOLDOWN_MS = 20000
+const OPEN_DISTANCE = 4.5
+const OPEN_TIMEOUT_MS = 7000
+const MOVE_TIMEOUT_MS = 12000
+const ACTION_TIMEOUT_MS = 6000
+
+const BASE_CONTAINER_BLOCKS = new Set([
+  'chest',
+  'trapped_chest',
+  'barrel',
+  'ender_chest',
+  'dispenser',
+  'dropper',
+  'hopper'
+])
+
+const MOB_DROP_NAMES = new Set([
+  'bone',
+  'arrow',
+  'string',
+  'spider_eye',
+  'rotten_flesh',
+  'gunpowder',
+  'slime_ball',
+  'magma_cream',
+  'leather',
+  'feather',
+  'egg',
+  'wool',
+  'ender_pearl'
+])
+
+const RESOURCE_NAMES = new Set([
+  'coal',
+  'charcoal',
+  'iron_ingot',
+  'raw_iron',
+  'gold_ingot',
+  'raw_gold',
+  'copper_ingot',
+  'raw_copper',
+  'diamond',
+  'emerald',
+  'redstone',
+  'lapis_lazuli',
+  'quartz',
+  'flint',
+  'stick',
+  'clay_ball'
+])
+
+function isContainerBlockName (name) {
+  if (!name) return false
+  return BASE_CONTAINER_BLOCKS.has(name) ||
+    name === 'shulker_box' ||
+    name.endsWith('_shulker_box') ||
+    name.endsWith('_chest')
+}
+
+function parsePositiveInteger (value) {
+  const number = Number(value)
+  if (!Number.isInteger(number) || number <= 0) return null
+  return number
+}
+
+function stripContainerSuffix (text) {
+  return String(text || '')
+    .trim()
+    .replace(/\s+(?:em|no|na|nos|nas|do|da|dos|das|de)\s+(?:ba[uú]s?|containers?)(?:\s+pr[oó]ximos?)?$/i, '')
+    .replace(/\s+(?:ba[uú]s?|containers?)(?:\s+pr[oó]ximos?)?$/i, '')
+    .trim()
+}
+
+function parseAmountTarget (text) {
+  const parts = String(text || '').trim().split(/\s+/).filter(Boolean)
+  if (parts.length === 0) return { count: null, target: '' }
+  const count = parsePositiveInteger(parts[0])
+  return count
+    ? { count, target: parts.slice(1).join(' ') }
+    : { count: null, target: parts.join(' ') }
+}
+
+function parseContainerSearchCommand (text) {
+  const target = stripContainerSuffix(String(text || '').replace(/^procurar\s+/i, ''))
+  return { target }
+}
+
+function parseContainerWithdrawCommand (text) {
+  const withoutVerb = String(text || '').replace(/^(pegar|buscar)\s+/i, '')
+  const stripped = stripContainerSuffix(withoutVerb)
+  const { count, target } = parseAmountTarget(stripped)
+  return { target, count: count || 1 }
+}
+
+function parseContainerDepositCommand (text) {
+  const query = String(text || '').replace(/^guardar\s+/i, '').trim()
+  if (query === 'tudo') return { mode: 'all', target: null, count: null }
+  if (query === 'recursos') return { mode: 'resources', target: null, count: null }
+  if (query === 'blocos') return { mode: 'blocks', target: null, count: null }
+  if (query === 'drops') return { mode: 'drops', target: null, count: null }
+
+  const { count, target } = parseAmountTarget(query)
+  return { mode: 'target', target, count }
+}
+
+function isContainerCommandText (text) {
+  return /\b(?:ba[uú]s?|containers?)\b/i.test(text)
+}
+
+function createContainerHelpers ({
+  getBot,
+  Vec3,
+  catalog,
+  inventory,
+  perception,
+  goals,
+  withTimeout,
+  owner,
+  getActiveSkill,
+  startSkill,
+  finishSkill,
+  assertSkillActive,
+  getNavigationController,
+  getReconnecting,
+  survival
+}) {
+  const memory = new Map()
+
+  function bot () {
+    const current = getBot()
+    if (!current) throw new Error('bot ainda nao inicializado')
+    return current
+  }
+
+  function currentDimension () {
+    return bot().game?.dimension || 'unknown'
+  }
+
+  function positionInfo (position) {
+    return {
+      x: Math.floor(position.x),
+      y: Math.floor(position.y),
+      z: Math.floor(position.z)
+    }
+  }
+
+  function positionKey (position, dimension = currentDimension()) {
+    const pos = positionInfo(position)
+    return `${dimension}:${pos.x},${pos.y},${pos.z}`
+  }
+
+  function vecFromPosition (position) {
+    return new Vec3(position.x, position.y, position.z)
+  }
+
+  function itemStacksToCounts (items = []) {
+    const counts = new Map()
+    for (const item of items) {
+      if (!item?.name) continue
+      counts.set(item.name, (counts.get(item.name) || 0) + item.count)
+    }
+
+    return [...counts.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, count]) => ({ name, count }))
+  }
+
+  function formatCounts (items = []) {
+    return items.map(item => `${item.count}x ${item.name}`).join(', ')
+  }
+
+  function getMemoryEntryAt (position, dimension = currentDimension()) {
+    return memory.get(positionKey(position, dimension)) || null
+  }
+
+  function rememberBlock (block) {
+    const key = positionKey(block.position)
+    const existing = memory.get(key)
+    const now = Date.now()
+    const entry = existing || {
+      key,
+      dimension: currentDimension(),
+      position: positionInfo(block.position),
+      type: block.name,
+      items: [],
+      itemNames: [],
+      capacity: null,
+      freeSlots: null,
+      empty: null,
+      accessible: null,
+      blocked: false,
+      lastSeenAt: now,
+      lastCheckedAt: 0,
+      lastFailure: null,
+      failures: 0
+    }
+
+    entry.type = block.name
+    entry.position = positionInfo(block.position)
+    entry.lastSeenAt = now
+    memory.set(key, entry)
+    trimMemory()
+    return entry
+  }
+
+  function trimMemory () {
+    if (memory.size <= MAX_CONTAINER_MEMORY) return
+    const entries = [...memory.values()].sort((a, b) => (a.lastSeenAt || 0) - (b.lastSeenAt || 0))
+    for (const entry of entries.slice(0, memory.size - MAX_CONTAINER_MEMORY)) {
+      memory.delete(entry.key)
+    }
+  }
+
+  function containerItems (window) {
+    if (typeof window.containerItems === 'function') return window.containerItems()
+    return typeof window.items === 'function' ? window.items() : []
+  }
+
+  function containerCapacity (window, blockName) {
+    if (Number.isInteger(window.inventoryStart) && window.inventoryStart > 0) return window.inventoryStart
+    if (blockName === 'chest' || blockName === 'trapped_chest') return 27
+    return 27
+  }
+
+  function updateEntryFromWindow (entry, window, block) {
+    const items = containerItems(window)
+    const counts = itemStacksToCounts(items)
+    const capacity = containerCapacity(window, block.name)
+    entry.type = block.name
+    entry.items = counts
+    entry.itemNames = counts.map(item => item.name)
+    entry.capacity = capacity
+    entry.freeSlots = Math.max(0, capacity - items.length)
+    entry.empty = counts.length === 0
+    entry.accessible = true
+    entry.blocked = false
+    entry.lastFailure = null
+    entry.lastCheckedAt = Date.now()
+    entry.lastSeenAt = Date.now()
+    memory.set(entry.key, entry)
+    return entry
+  }
+
+  function markFailure (entry, reason) {
+    entry.accessible = false
+    entry.blocked = true
+    entry.lastFailure = reason
+    entry.failures = (entry.failures || 0) + 1
+    entry.lastCheckedAt = Date.now()
+    memory.set(entry.key, entry)
+  }
+
+  function scanContainerBlocks (options = {}) {
+    const current = bot()
+    const radius = options.radius || CONTAINER_SCAN_RADIUS
+    const vertical = options.vertical || CONTAINER_SCAN_VERTICAL
+    const max = options.max || MAX_CONTAINERS_PER_ACTION
+    const center = current.entity.position.floored()
+    const blocks = []
+    const seen = new Set()
+
+    for (let x = -radius; x <= radius; x++) {
+      for (let y = -vertical; y <= vertical; y++) {
+        for (let z = -radius; z <= radius; z++) {
+          if (Math.hypot(x, z) > radius) continue
+          const block = current.blockAt(center.offset(x, y, z))
+          if (!block || !isContainerBlockName(block.name)) continue
+          const key = positionKey(block.position)
+          if (seen.has(key)) continue
+          seen.add(key)
+          blocks.push(block)
+        }
+      }
+    }
+
+    return blocks
+      .sort((a, b) => current.entity.position.distanceTo(a.position) - current.entity.position.distanceTo(b.position))
+      .slice(0, max)
+  }
+
+  function scanContainers (options = {}) {
+    const blocks = scanContainerBlocks(options)
+    const entries = blocks.map(rememberBlock)
+    return entries
+  }
+
+  function entryDistance (entry) {
+    return bot().entity.position.distanceTo(vecFromPosition(entry.position))
+  }
+
+  function entryIsFresh (entry) {
+    return entry.lastCheckedAt > 0 && Date.now() - entry.lastCheckedAt <= MEMORY_TTL_MS
+  }
+
+  function entryRecentlyFailed (entry) {
+    return entry.lastFailure && Date.now() - entry.lastCheckedAt <= RECENT_FAILURE_COOLDOWN_MS
+  }
+
+  function entryHasTarget (entry, target) {
+    if (!entry?.items?.length) return false
+    return entry.items.some(item => inventory.itemTargetMatchesName(target, item.name))
+  }
+
+  function countTargetInEntry (entry, target) {
+    if (!entry?.items?.length) return 0
+    return entry.items
+      .filter(item => inventory.itemTargetMatchesName(target, item.name))
+      .reduce((sum, item) => sum + item.count, 0)
+  }
+
+  function knownEntriesNearby (radius = CONTAINER_SCAN_RADIUS) {
+    const dimension = currentDimension()
+    return [...memory.values()]
+      .filter(entry => entry.dimension === dimension)
+      .filter(entry => entryDistance(entry) <= radius)
+      .sort((a, b) => entryDistance(a) - entryDistance(b))
+  }
+
+  function buildCandidateEntries ({ target = null, purpose = 'inspect', force = false } = {}) {
+    const scanned = scanContainers()
+    const entries = new Map()
+    for (const entry of knownEntriesNearby()) entries.set(entry.key, entry)
+    for (const entry of scanned) entries.set(entry.key, entry)
+
+    return [...entries.values()]
+      .filter(entry => !entryRecentlyFailed(entry) || force)
+      .map((entry) => {
+        let score = 80 - entryDistance(entry) * 3
+        if (purpose === 'search' && target) {
+          if (entryHasTarget(entry, target)) score += 140
+          else if (entryIsFresh(entry)) score -= 45
+        }
+        if (purpose === 'deposit') {
+          if (entry.freeSlots > 0) score += 45
+          if (entry.empty) score += 20
+          if (entry.items?.length) score += 10
+        }
+        if (entry.accessible === false) score -= 60
+        if (!entry.lastCheckedAt) score += 15
+        return { entry, score }
+      })
+      .sort((a, b) => b.score - a.score || entryDistance(a.entry) - entryDistance(b.entry))
+      .slice(0, MAX_CONTAINERS_PER_ACTION)
+      .map(candidate => candidate.entry)
+  }
+
+  function immediateRisk () {
+    const current = bot()
+    if (getReconnecting()) return 'o bot esta reconectando'
+    if (!current.entity) return 'bot sem entidade no mundo'
+    if (current.health <= 8) return `vida baixa (${current.health}/20)`
+
+    const assessment = survival?.assess?.()
+    if (Number(assessment?.severity || 0) >= 85) {
+      return `risco de sobrevivencia alto: ${assessment?.top?.reason || assessment?.summary || assessment.severity}`
+    }
+
+    const danger = perception?.getWorldTokens?.({ maxAgeMs: 2500 }).find((token) => {
+      if (token.category === 'hostile_mob') return token.heads?.danger >= 75 && token.distance <= 10
+      if (token.category === 'liquid_pool' && token.name === 'lava') return token.exposedFaces > 0 && token.distance <= 5
+      return token.category === 'fall_risk' && token.distance <= 2
+    })
+
+    return danger ? `${danger.name}/${danger.category} perto demais` : null
+  }
+
+  async function moveNearEntry (entry) {
+    const current = bot()
+    const position = vecFromPosition(entry.position)
+    const distance = current.entity.position.distanceTo(position)
+    if (distance <= OPEN_DISTANCE) return
+
+    getNavigationController()?.applyMovements?.()
+    await withTimeout(
+      current.pathfinder.goto(new goals.GoalNear(position.x, position.y, position.z, 3)),
+      MOVE_TIMEOUT_MS,
+      `aproximacao do container ${entry.type}`
+    )
+  }
+
+  async function withOpenContainer (entry, skill, actionLabel, callback) {
+    const current = bot()
+    const risk = immediateRisk()
+    if (risk) throw new Error(`nao vou interagir com container agora: ${risk}`)
+
+    assertSkillActive(skill)
+    await moveNearEntry(entry)
+    assertSkillActive(skill)
+
+    const block = current.blockAt(vecFromPosition(entry.position))
+    if (!block || !isContainerBlockName(block.name)) {
+      markFailure(entry, 'container nao encontrado na posicao memorizada')
+      throw new Error('container nao encontrado na posicao memorizada')
+    }
+
+    let window = null
+    try {
+      await current.lookAt(block.position.offset(0.5, 0.5, 0.5), true).catch(() => {})
+      window = await withTimeout(current.openContainer(block), OPEN_TIMEOUT_MS, `abrir ${block.name}`)
+      updateEntryFromWindow(entry, window, block)
+    } catch (err) {
+      markFailure(entry, err.message)
+      throw new Error(`${actionLabel}: ${err.message}`)
+    }
+
+    try {
+      const result = await callback(window, block, entry)
+      updateEntryFromWindow(entry, window, block)
+      return result
+    } catch (err) {
+      throw new Error(`${actionLabel}: ${err.message}`)
+    } finally {
+      try {
+        if (window?.close) window.close()
+      } catch {}
+    }
+  }
+
+  function inspectSummary (entry) {
+    if (!entry.lastCheckedAt) return `${entry.type} (${entry.position.x},${entry.position.y},${entry.position.z}) nao verificado`
+    if (entry.lastFailure) return `${entry.type} (${entry.position.x},${entry.position.y},${entry.position.z}) falhou: ${entry.lastFailure}`
+    const items = entry.items.length > 0 ? formatCounts(entry.items.slice(0, 8)) : 'vazio'
+    const age = Math.round((Date.now() - entry.lastCheckedAt) / 1000)
+    return `${entry.type} (${entry.position.x},${entry.position.y},${entry.position.z}) ${items} ha ${age}s`
+  }
+
+  async function inspectEntry (entry, skill) {
+    return withOpenContainer(entry, skill, 'inspecionar container', async () => entry)
+  }
+
+  async function scanAndInspectContainers () {
+    const startedAt = Date.now()
+    if (getActiveSkill()) return actionFail('containers.scan', `ja estou executando ${getActiveSkill().name}`, {}, startedAt)
+    const skill = startSkill('containers_scan')
+    if (!skill) return actionFail('containers.scan', 'nao consegui iniciar skill', {}, startedAt)
+
+    getNavigationController()?.stop?.('skill containers scan')
+    const found = scanContainers()
+    const inspected = []
+    const failures = []
+
+    try {
+      for (const entry of found.slice(0, MAX_CONTAINERS_PER_ACTION)) {
+        assertSkillActive(skill)
+        try {
+          await inspectEntry(entry, skill)
+          inspected.push(entry)
+        } catch (err) {
+          failures.push(`${entry.type}: ${err.message}`)
+        }
+      }
+
+      const message = inspected.length === 0
+        ? `Containers: encontrei ${found.length}, mas nao inspecionei nenhum.`
+        : `Containers: inspecionei ${inspected.length}/${found.length}. ${inspected.map(entry => `${entry.type}@${entry.position.x},${entry.position.y},${entry.position.z}`).join(' | ')}`
+      return actionOk('containers.scan', message, { found: found.length, inspected: inspected.length, failures }, startedAt)
+    } catch (err) {
+      return actionFail('containers.scan', err.message, { found: found.length, inspected: inspected.length, failures }, startedAt)
+    } finally {
+      bot().pathfinder.stop()
+      bot().clearControlStates()
+      finishSkill(skill)
+    }
+  }
+
+  async function searchItemByQuery (query, options = {}) {
+    const startedAt = Date.now()
+    const target = inventory.normalizeItemTarget(query, 'inventory')
+    const visited = new Set()
+    if (getActiveSkill()) return actionFail('containers.search', `ja estou executando ${getActiveSkill().name}`, {}, startedAt)
+    const skill = startSkill('containers_procurar')
+    if (!skill) return actionFail('containers.search', 'nao consegui iniciar skill', {}, startedAt)
+
+    getNavigationController()?.stop?.('skill containers search')
+    try {
+      const cachedHit = buildCandidateEntries({ target, purpose: 'search', force: options.force })
+        .find(entry => entryIsFresh(entry) && entryHasTarget(entry, target))
+
+      if (cachedHit && !options.force) {
+        const count = countTargetInEntry(cachedHit, target)
+        return actionOk(
+          'containers.search',
+          `Memoria: encontrei ${count} item(ns) compativeis com ${query} em ${cachedHit.type} (${cachedHit.position.x} ${cachedHit.position.y} ${cachedHit.position.z}).`,
+          { entry: cachedHit, count },
+          startedAt
+        )
+      }
+
+      const candidates = buildCandidateEntries({ target, purpose: 'search', force: options.force })
+      const failures = []
+      for (const entry of candidates) {
+        if (visited.has(entry.key)) continue
+        visited.add(entry.key)
+        if (!options.force && entryIsFresh(entry) && !entryHasTarget(entry, target)) continue
+
+        try {
+          await inspectEntry(entry, skill)
+        } catch (err) {
+          failures.push(`${entry.type}: ${err.message}`)
+          continue
+        }
+
+        if (entryHasTarget(entry, target)) {
+          const count = countTargetInEntry(entry, target)
+          return actionOk(
+            'containers.search',
+            `Encontrei ${count} item(ns) compativeis com ${query} em ${entry.type} (${entry.position.x} ${entry.position.y} ${entry.position.z}).`,
+            { entry, count, visited: visited.size, failures },
+            startedAt
+          )
+        }
+      }
+
+      return actionFail('containers.search', `nao encontrei ${query} em ${visited.size} container(s) verificado(s)`, { visited: visited.size, failures }, startedAt)
+    } finally {
+      bot().pathfinder.stop()
+      bot().clearControlStates()
+      finishSkill(skill)
+    }
+  }
+
+  function firstMatchingContainerItems (window, target) {
+    return containerItems(window)
+      .filter(item => inventory.itemTargetMatchesName(target, item.name))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+  }
+
+  async function withdrawItemByQuery (query, count = 1, options = {}) {
+    const startedAt = Date.now()
+    const target = inventory.normalizeItemTarget(query, 'inventory')
+    const requested = Math.max(1, count || 1)
+    const visited = new Set()
+    let remaining = requested
+    const gains = []
+    if (getActiveSkill()) return actionFail('containers.withdraw', `ja estou executando ${getActiveSkill().name}`, {}, startedAt)
+    const skill = startSkill('containers_pegar')
+    if (!skill) return actionFail('containers.withdraw', 'nao consegui iniciar skill', {}, startedAt)
+
+    getNavigationController()?.stop?.('skill containers withdraw')
+    try {
+      const candidates = buildCandidateEntries({ target, purpose: 'search', force: options.force })
+      const failures = []
+      for (const entry of candidates) {
+        if (remaining <= 0) break
+        if (visited.has(entry.key)) continue
+        visited.add(entry.key)
+        if (!options.force && entryIsFresh(entry) && !entryHasTarget(entry, target)) continue
+
+        try {
+          await withOpenContainer(entry, skill, 'retirar item do container', async (window) => {
+            for (const item of firstMatchingContainerItems(window, target)) {
+              if (remaining <= 0) break
+              if (!inventory.inventoryCanReceiveAny([item.name])) throw new Error(`inventario sem espaco para ${item.name}`)
+              const amount = Math.min(remaining, item.count)
+              await withTimeout(window.withdraw(item.type, null, amount), ACTION_TIMEOUT_MS, `retirar ${amount}x ${item.name}`)
+              gains.push({ name: item.name, count: amount, from: entry.position })
+              remaining -= amount
+            }
+          })
+        } catch (err) {
+          failures.push(`${entry.type}: ${err.message}`)
+        }
+      }
+
+      const taken = requested - remaining
+      if (taken <= 0) {
+        return actionFail('containers.withdraw', `nao encontrei ${query} para retirar em ${visited.size} container(s)`, { visited: visited.size, failures }, startedAt)
+      }
+
+      const gainedText = formatCounts(itemStacksToCounts(gains))
+      const suffix = remaining > 0 ? `; faltou ${remaining}` : ''
+      return actionOk('containers.withdraw', `Peguei ${gainedText} de container(s)${suffix}.`, { gains, remaining, visited: visited.size, failures }, startedAt)
+    } finally {
+      bot().pathfinder.stop()
+      bot().clearControlStates()
+      finishSkill(skill)
+    }
+  }
+
+  function isArmor (name) {
+    return name.endsWith('_helmet') || name.endsWith('_chestplate') || name.endsWith('_leggings') || name.endsWith('_boots') || name === 'elytra'
+  }
+
+  function isWeaponOrTool (name) {
+    return name.endsWith('_sword') || name.endsWith('_axe') || name.endsWith('_pickaxe') ||
+      name.endsWith('_shovel') || name.endsWith('_hoe') || name === 'shield' ||
+      name === 'bow' || name === 'crossbow' || name === 'trident' || name === 'mace'
+  }
+
+  function isFood (name) {
+    return catalog.foodNames.has(name)
+  }
+
+  function isBlockItem (name) {
+    return Boolean(catalog.data.blocksByName[name])
+  }
+
+  function isResourceItem (name) {
+    return RESOURCE_NAMES.has(name) ||
+      MOB_DROP_NAMES.has(name) ||
+      catalog.catalogItemHasCategory(name, 'wood') ||
+      name.endsWith('_log') ||
+      name.endsWith('_planks') ||
+      name.endsWith('_ore')
+  }
+
+  function protectedKeepCount (name) {
+    if (isWeaponOrTool(name) || isArmor(name) || name.endsWith('_bed')) return Infinity
+    if (isFood(name)) return 8
+    if (name === 'torch') return 16
+    if (name === 'arrow' || name === 'spectral_arrow' || name === 'tipped_arrow') return 16
+    return 0
+  }
+
+  function depositModeAllowsItem (mode, itemName, target) {
+    if (mode === 'all') return true
+    if (mode === 'blocks') return isBlockItem(itemName)
+    if (mode === 'resources') return isResourceItem(itemName)
+    if (mode === 'drops') return MOB_DROP_NAMES.has(itemName) || isResourceItem(itemName)
+    if (mode === 'target') return target && inventory.itemTargetMatchesName(target, itemName)
+    return false
+  }
+
+  function createDepositPlan ({ mode, target: query, count = null }) {
+    const target = query ? inventory.normalizeItemTarget(query, 'inventory') : null
+    const groups = new Map()
+    for (const item of bot().inventory.items()) {
+      const existing = groups.get(item.name) || { name: item.name, type: item.type, metadata: item.metadata ?? null, count: 0 }
+      existing.count += item.count
+      groups.set(item.name, existing)
+    }
+
+    const plan = []
+    let remainingRequested = count || Infinity
+    for (const item of [...groups.values()].sort((a, b) => a.name.localeCompare(b.name))) {
+      if (!depositModeAllowsItem(mode, item.name, target)) continue
+      const keep = protectedKeepCount(item.name)
+      const available = Math.max(0, item.count - keep)
+      const amount = Math.min(available, remainingRequested)
+      if (amount <= 0) continue
+      plan.push({ ...item, remaining: amount })
+      remainingRequested -= amount
+      if (remainingRequested <= 0) break
+    }
+
+    return { plan, target, protected: [...groups.values()].filter(item => depositModeAllowsItem(mode, item.name, target) && item.count - protectedKeepCount(item.name) <= 0) }
+  }
+
+  function containerCanProbablyAccept (window, itemName) {
+    const items = containerItems(window)
+    const maxStack = inventory.itemMaxStackSize(itemName)
+    if (items.some(item => item.name === itemName && item.count < (item.stackSize || maxStack))) return true
+    return items.length < containerCapacity(window, 'container')
+  }
+
+  async function tryDeposit (window, item, maxAmount) {
+    let amount = maxAmount
+    while (amount > 0) {
+      try {
+        await withTimeout(window.deposit(item.type, item.metadata ?? null, amount), ACTION_TIMEOUT_MS, `guardar ${amount}x ${item.name}`)
+        return amount
+      } catch {
+        amount = Math.floor(amount / 2)
+      }
+    }
+    return 0
+  }
+
+  function depositCandidates (plan) {
+    const planNames = new Set(plan.map(item => item.name))
+    return buildCandidateEntries({ purpose: 'deposit' })
+      .map((entry) => {
+        let score = 80 - entryDistance(entry) * 3
+        if (entry.items?.some(item => planNames.has(item.name))) score += 120
+        if (entry.freeSlots > 0) score += 40
+        if (!entry.lastCheckedAt) score += 20
+        return { entry, score }
+      })
+      .sort((a, b) => b.score - a.score || entryDistance(a.entry) - entryDistance(b.entry))
+      .map(candidate => candidate.entry)
+  }
+
+  async function depositByRequest (request) {
+    const startedAt = Date.now()
+    const { plan, protected: protectedItems } = createDepositPlan(request)
+    const deposited = []
+    const visited = new Set()
+
+    if (getActiveSkill()) return actionFail('containers.deposit', `ja estou executando ${getActiveSkill().name}`, {}, startedAt)
+    if (plan.length === 0) {
+      const protectedText = protectedItems.length > 0 ? ` Itens protegidos: ${protectedItems.map(item => item.name).join(', ')}.` : ''
+      return actionFail('containers.deposit', `nao ha itens permitidos para guardar.${protectedText}`, {}, startedAt)
+    }
+
+    const skill = startSkill('containers_guardar')
+    if (!skill) return actionFail('containers.deposit', 'nao consegui iniciar skill', {}, startedAt)
+
+    getNavigationController()?.stop?.('skill containers deposit')
+    try {
+      const candidates = depositCandidates(plan)
+      const failures = []
+      for (const entry of candidates) {
+        if (plan.every(item => item.remaining <= 0)) break
+        if (visited.has(entry.key)) continue
+        visited.add(entry.key)
+
+        try {
+          await withOpenContainer(entry, skill, 'guardar itens no container', async (window) => {
+            for (const item of plan) {
+              if (item.remaining <= 0) continue
+              if (!containerCanProbablyAccept(window, item.name)) continue
+              const amount = await tryDeposit(window, item, item.remaining)
+              if (amount <= 0) continue
+              item.remaining -= amount
+              deposited.push({ name: item.name, count: amount, to: entry.position })
+            }
+          })
+        } catch (err) {
+          failures.push(`${entry.type}: ${err.message}`)
+        }
+      }
+
+      if (deposited.length === 0) {
+        return actionFail('containers.deposit', `nao consegui guardar em ${visited.size} container(s)`, { visited: visited.size, failures }, startedAt)
+      }
+
+      const remaining = plan.filter(item => item.remaining > 0)
+      const suffix = remaining.length > 0 ? `; sobrou ${remaining.map(item => `${item.remaining}x ${item.name}`).join(', ')}` : ''
+      return actionOk('containers.deposit', `Guardei ${formatCounts(itemStacksToCounts(deposited))}${suffix}.`, { deposited, remaining, visited: visited.size, failures }, startedAt)
+    } finally {
+      bot().pathfinder.stop()
+      bot().clearControlStates()
+      finishSkill(skill)
+    }
+  }
+
+  function describeKnownContainers () {
+    const entries = knownEntriesNearby(128)
+    if (entries.length === 0) return 'Containers conhecidos: nenhum.'
+    return `Containers conhecidos: ${entries.slice(0, 10).map(inspectSummary).join(' | ')}`
+  }
+
+  function clearMemory () {
+    const count = memory.size
+    memory.clear()
+    return count
+  }
+
+  function describeScanOnly () {
+    const entries = scanContainers()
+    if (entries.length === 0) return 'Containers scan: nenhum container perto.'
+    return `Containers scan: ${entries.map(entry => `${entry.type} (${entry.position.x},${entry.position.y},${entry.position.z})`).join(' | ')}`
+  }
+
+  function getStateSnapshot () {
+    const entries = knownEntriesNearby(128).slice(0, 12)
+    return {
+      known: memory.size,
+      nearby: entries.length,
+      ttlMs: MEMORY_TTL_MS,
+      entries: entries.map(entry => ({
+        type: entry.type,
+        position: entry.position,
+        items: entry.items.slice(0, 12),
+        fresh: entryIsFresh(entry),
+        accessible: entry.accessible,
+        lastFailure: entry.lastFailure
+      }))
+    }
+  }
+
+  return {
+    memory,
+    isContainerBlockName,
+    getMemoryEntryAt,
+    scanContainers,
+    scanAndInspectContainers,
+    searchItemByQuery,
+    withdrawItemByQuery,
+    depositByRequest,
+    describeKnownContainers,
+    describeScanOnly,
+    clearMemory,
+    getStateSnapshot
+  }
+}
+
+module.exports = {
+  isContainerBlockName,
+  isContainerCommandText,
+  parseContainerSearchCommand,
+  parseContainerWithdrawCommand,
+  parseContainerDepositCommand,
+  createContainerHelpers
+}

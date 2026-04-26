@@ -50,7 +50,17 @@ const catalogAliases = {
   tocha: { items: ['torch'] },
   tochas: { items: ['torch'] },
   bau: { blocks: ['chest'], items: ['chest'] },
+  baus: { blockCategories: ['container'], itemCategories: ['container'] },
   chest: { blocks: ['chest'], items: ['chest'] },
+  container: { blockCategories: ['container'], itemCategories: ['container'] },
+  containers: { blockCategories: ['container'], itemCategories: ['container'] },
+  bau_armadilha: { blocks: ['trapped_chest'], items: ['trapped_chest'] },
+  bau_do_fim: { blocks: ['ender_chest'], items: ['ender_chest'] },
+  ender_chest: { blocks: ['ender_chest'], items: ['ender_chest'] },
+  barril: { blocks: ['barrel'], items: ['barrel'] },
+  barrel: { blocks: ['barrel'], items: ['barrel'] },
+  shulker: { blockCategories: ['container'], itemCategories: ['container'] },
+  caixa_shulker: { blockCategories: ['container'], itemCategories: ['container'] },
   fornalha: { blocks: ['furnace'], items: ['furnace'] },
   comida: { itemCategories: ['food'] },
   pao: { items: ['bread'] },
@@ -80,6 +90,19 @@ function createMinecraftCatalog (data) {
   const itemNames = new Set(Object.keys(data.itemsByName || {}))
   const foodNames = new Set(Object.keys(data.foodsByName || {}))
 
+  function isContainerName (name) {
+    return name === 'chest' ||
+      name === 'trapped_chest' ||
+      name === 'barrel' ||
+      name === 'ender_chest' ||
+      name === 'dispenser' ||
+      name === 'dropper' ||
+      name === 'hopper' ||
+      name === 'shulker_box' ||
+      name.endsWith('_shulker_box') ||
+      name.endsWith('_chest')
+  }
+
   const blockCategories = {
     ore: new Set([...blockNames].filter(name => name.endsWith('_ore') || name === 'ancient_debris')),
     wood: new Set([...blockNames].filter(name => name.endsWith('_log') || name.endsWith('_stem') || name.endsWith('_hyphae'))),
@@ -88,7 +111,8 @@ function createMinecraftCatalog (data) {
       'tuff', 'calcite', 'basalt', 'blackstone', 'netherrack', 'end_stone'
     ], blockNames),
     dirt: createNameSet(['dirt', 'grass_block', 'coarse_dirt', 'rooted_dirt', 'podzol', 'mycelium'], blockNames),
-    sand: createNameSet(['sand', 'red_sand', 'gravel'], blockNames)
+    sand: createNameSet(['sand', 'red_sand', 'gravel'], blockNames),
+    container: new Set([...blockNames].filter(isContainerName))
   }
 
   const itemCategories = {
@@ -104,7 +128,8 @@ function createMinecraftCatalog (data) {
     )),
     wood: new Set([...itemNames].filter(name =>
       name.endsWith('_log') || name.endsWith('_stem') || name.endsWith('_hyphae') || name.endsWith('_planks')
-    ))
+    )),
+    container: new Set([...itemNames].filter(isContainerName))
   }
 
   const catalog = {

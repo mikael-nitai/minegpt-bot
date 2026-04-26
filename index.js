@@ -13,6 +13,13 @@ const { createStateReporter } = require('./state')
 const { actionOk, actionFail } = require('./action-result')
 const { createCraftingHelpers } = require('./crafting')
 const { createPlacementHelpers, parsePlaceCommand } = require('./placement')
+const {
+  createContainerHelpers,
+  isContainerCommandText,
+  parseContainerSearchCommand,
+  parseContainerWithdrawCommand,
+  parseContainerDepositCommand
+} = require('./containers')
 
 const CONFIG_PATH = path.join(__dirname, 'config.json')
 
@@ -76,6 +83,7 @@ let skillRegistry
 let stateReporter
 let craftingHelpers
 let placementHelpers
+let containerHelpers
 
 const collectionState = {
   recent: [],
@@ -91,7 +99,8 @@ const perceptionHelpers = createPerceptionHelpers({
   isDroppedItemEntity,
   describeDroppedItemEntity,
   ownerMatches,
-  getEscapeDirections
+  getEscapeDirections,
+  getContainerMemory: () => containerHelpers
 })
 const {
   perceptionState,
@@ -140,7 +149,8 @@ stateReporter = createStateReporter({
   collectionState,
   getActiveSkill: () => activeSkill,
   getNavigationController: () => navigationController,
-  getReconnecting: () => reconnecting
+  getReconnecting: () => reconnecting,
+  getContainers: () => containerHelpers
 })
 
 craftingHelpers = createCraftingHelpers({
@@ -165,6 +175,24 @@ placementHelpers = createPlacementHelpers({
   Vec3,
   catalog: minecraftCatalog,
   inventory: inventoryHelpers,
+  goals,
+  withTimeout,
+  owner: config.owner,
+  getActiveSkill: () => activeSkill,
+  startSkill,
+  finishSkill,
+  assertSkillActive,
+  getNavigationController: () => navigationController,
+  getReconnecting: () => reconnecting,
+  survival: survivalGuard
+})
+
+containerHelpers = createContainerHelpers({
+  getBot: () => bot,
+  Vec3,
+  catalog: minecraftCatalog,
+  inventory: inventoryHelpers,
+  perception: perceptionHelpers,
   goals,
   withTimeout,
   owner: config.owner,
@@ -1277,6 +1305,58 @@ function setupSkillRegistry () {
   })
 
   registry.register({
+    id: 'containers.scan',
+    description: 'Procura, abre e memoriza containers proximos.',
+    risk: 'medium',
+    timeoutMs: 60000,
+    run: () => containerHelpers.scanAndInspectContainers()
+  })
+
+  registry.register({
+    id: 'containers.search',
+    description: 'Procura item na memoria e em containers proximos.',
+    risk: 'low',
+    timeoutMs: 60000,
+    inputSchema: { target: 'string' },
+    run: ({ target }) => {
+      if (!target) return actionFail('containers.search', 'alvo ausente')
+      return containerHelpers.searchItemByQuery(target)
+    }
+  })
+
+  registry.register({
+    id: 'containers.withdraw',
+    description: 'Retira item de containers proximos.',
+    risk: 'medium',
+    timeoutMs: 60000,
+    inputSchema: { target: 'string', count: 'number optional' },
+    run: ({ target, count = 1 }) => {
+      if (!target) return actionFail('containers.withdraw', 'alvo ausente')
+      return containerHelpers.withdrawItemByQuery(target, count)
+    }
+  })
+
+  registry.register({
+    id: 'containers.deposit',
+    description: 'Guarda item, blocos, recursos, drops ou tudo em containers proximos.',
+    risk: 'medium',
+    timeoutMs: 60000,
+    inputSchema: { mode: 'target|all|resources|blocks|drops', target: 'string optional', count: 'number optional' },
+    run: ({ mode = 'target', target = null, count = null }) => containerHelpers.depositByRequest({ mode, target, count })
+  })
+
+  registry.register({
+    id: 'containers.clear_memory',
+    description: 'Esquece memoria de containers.',
+    risk: 'low',
+    timeoutMs: 1000,
+    run: () => {
+      const count = containerHelpers.clearMemory()
+      return actionOk('containers.clear_memory', `esqueci ${count} container(s)`)
+    }
+  })
+
+  registry.register({
     id: 'survival.status',
     description: 'Consulta estado de sobrevivencia.',
     risk: 'low',
@@ -1674,6 +1754,76 @@ async function handleCommand (username, message) {
     return
   }
 
+  if (text === 'containers' || text === 'containers conhecidos' || text === 'listar baus conhecidos' || text === 'listar baús conhecidos') {
+    sendLongMessage(containerHelpers.describeKnownContainers())
+    return
+  }
+
+  if (text === 'containers scan' || text === 'scan baus' || text === 'scan baús') {
+    const result = await containerHelpers.scanAndInspectContainers()
+    sendLongMessage(result.ok ? result.message : `Falha no scan de containers: ${result.reason}`)
+    return
+  }
+
+  if (text === 'lembrar baus' || text === 'lembrar baús') {
+    sendLongMessage(containerHelpers.describeScanOnly())
+    return
+  }
+
+  if (text === 'containers esquecer' || text === 'esquecer baus' || text === 'esquecer baús') {
+    const count = containerHelpers.clearMemory()
+    bot.chat(`Esqueci ${count} container(s).`)
+    return
+  }
+
+  if (text.startsWith('procurar ')) {
+    const request = parseContainerSearchCommand(text)
+    if (!request.target) {
+      bot.chat('Use: procurar ITEM em baus proximos')
+      return
+    }
+
+    const result = await containerHelpers.searchItemByQuery(request.target)
+    sendLongMessage(result.ok ? result.message : `Falha ao procurar: ${result.reason}`)
+    return
+  }
+
+  if (text.startsWith('buscar ')) {
+    const request = parseContainerWithdrawCommand(text)
+    if (!request.target) {
+      bot.chat('Use: buscar ITEM em container')
+      return
+    }
+
+    const result = await containerHelpers.withdrawItemByQuery(request.target, request.count)
+    sendLongMessage(result.ok ? result.message : `Falha ao buscar: ${result.reason}`)
+    return
+  }
+
+  if (text.startsWith('pegar ') && isContainerCommandText(text)) {
+    const request = parseContainerWithdrawCommand(text)
+    if (!request.target) {
+      bot.chat('Use: pegar ITEM de bau')
+      return
+    }
+
+    const result = await containerHelpers.withdrawItemByQuery(request.target, request.count)
+    sendLongMessage(result.ok ? result.message : `Falha ao pegar de container: ${result.reason}`)
+    return
+  }
+
+  if (text.startsWith('guardar ')) {
+    const request = parseContainerDepositCommand(text)
+    if (request.mode === 'target' && !request.target) {
+      bot.chat('Use: guardar ITEM, guardar tudo, guardar recursos, guardar blocos ou guardar drops')
+      return
+    }
+
+    const result = await containerHelpers.depositByRequest(request)
+    sendLongMessage(result.ok ? result.message : `Falha ao guardar: ${result.reason}`)
+    return
+  }
+
   if (text.startsWith('receita ')) {
     sendLongMessage(craftingHelpers.describeRecipeByQuery(text.slice(8).trim()))
     return
@@ -1843,6 +1993,7 @@ async function handleCommand (username, message) {
     bot.chat('Crafting: receita ITEM, crafting status, craft ITEM, craft N ITEM')
     bot.chat('Coleta: coletar ALVO, coletar N ALVO, pegar ALVO, pegar drops, drops on|off. Exemplos: coletar 5 stone, pegar pao')
     bot.chat('Blocos: blocos, colocar BLOCO, colocar BLOCO na frente|abaixo|perto de mim|em X Y Z')
+    bot.chat('Containers: containers, containers scan, procurar ITEM, buscar ITEM em container, pegar ITEM de bau, guardar ITEM|tudo|recursos|blocos|drops')
   }
 }
 

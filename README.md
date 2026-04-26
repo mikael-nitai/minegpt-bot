@@ -16,6 +16,7 @@ O bot ja possui:
 - colocacao segura de blocos simples no mundo;
 - busca manual e automatica de drops;
 - crafting direto seguro e cadeia curta para itens basicos;
+- interacao inicial com containers: scan, memoria, busca, retirada e deposito;
 - Survival Guard com diagnostico, pedidos de ajuda, comida automatica e reacoes curtas;
 - skill registry, ActionResult e snapshot de estado para futuro planner/IA.
 
@@ -147,6 +148,34 @@ Exemplos:
 
 A skill usa apenas blocos existentes no inventario, exige posicao livre, face de apoio valida, distancia curta ou navegavel, risco baixo e confirmacao do bloco colocado.
 
+### Containers
+
+- `containers`
+- `containers conhecidos`
+- `containers scan`
+- `lembrar baus`
+- `containers esquecer`
+- `procurar ITEM`
+- `procurar ITEM em baus proximos`
+- `buscar ITEM em container`
+- `pegar ITEM de bau`
+- `guardar ITEM`
+- `guardar tudo`
+- `guardar recursos`
+- `guardar blocos`
+- `guardar drops`
+
+Exemplos:
+
+- `containers scan`
+- `procurar carvao em baus proximos`
+- `buscar 16 coal em container`
+- `pegar pao de bau`
+- `guardar cobblestone`
+- `guardar blocos`
+
+A memoria de containers fica em RAM, expira para uso pratico apos alguns minutos e evita reabrir o mesmo container repetidamente na mesma busca. O bot preserva por padrao ferramentas, armas, armadura, cama, comida minima, tochas minimas e flechas minimas.
+
 ### Crafting
 
 - `crafting status`
@@ -192,6 +221,7 @@ Esses comandos expõem estado e skills registradas para a futura camada de lingu
 - `survival.js`: Survival Guard, riscos e reacoes curtas.
 - `crafting.js`: crafting direto seguro e cadeia curta para itens basicos.
 - `placement.js`: colocacao segura de blocos simples.
+- `containers.js`: memoria e interacao segura com containers.
 - `skills.js`: skill registry para futura IA/planner.
 - `action-result.js`: resultado padronizado de acoes.
 - `state.js`: snapshot estruturado do estado do bot.
@@ -203,7 +233,7 @@ Esses comandos expõem estado e skills registradas para a futura camada de lingu
 npm test
 ```
 
-Atualmente os testes verificam sintaxe e smoke tests de catalogo, inventario, skills, crafting e colocacao de blocos.
+Atualmente os testes verificam sintaxe e smoke tests de catalogo, inventario, skills, crafting, colocacao de blocos e containers.
 
 ## Seguranca e limitacoes
 
@@ -212,6 +242,8 @@ Atualmente os testes verificam sintaxe e smoke tests de catalogo, inventario, sk
 - O bot nao deve receber credenciais no codigo.
 - `config.json` e `.env` sao ignorados.
 - Crafting ainda nao coleta automaticamente recursos faltantes.
+- A memoria de containers ainda nao persiste entre reinicios.
+- Deposito automatico e conservador e pode preservar itens demais ate refinarmos as regras.
 - A futura camada de linguagem natural deve chamar skills registradas, nao controlar Mineflayer diretamente.
 
 ## Licenca

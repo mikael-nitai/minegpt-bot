@@ -7,7 +7,8 @@ function createStateReporter ({
   collectionState,
   getActiveSkill,
   getNavigationController,
-  getReconnecting
+  getReconnecting,
+  getContainers = null
 }) {
   function positionSnapshot (position) {
     if (!position) return null
@@ -43,6 +44,7 @@ function createStateReporter ({
 
     const tokens = perception.getWorldTokens()
     const survivalStatus = survival.assess()
+    const containerState = getContainers?.()?.getStateSnapshot?.() || null
 
     return {
       online: true,
@@ -71,7 +73,8 @@ function createStateReporter ({
       },
       navigation: getNavigationController()?.describe() || 'sem navigation controller',
       activeSkill: getActiveSkill()?.name || null,
-      recentCollections: collectionState.recent.slice(0, 5)
+      recentCollections: collectionState.recent.slice(0, 5),
+      containers: containerState
     }
   }
 
