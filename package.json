@@ -1,0 +1,24 @@
+{
+  "name": "minegpt-bot",
+  "version": "1.0.0",
+  "description": "Bot de Minecraft Java com Mineflayer para comandos via chat",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "check": "node --check index.js && node --check catalog.js && node --check inventory.js && node --check perception.js && node --check survival.js && node --check crafting.js && node --check action-result.js && node --check skills.js && node --check state.js && node --check scripts/check-catalog.js && node --check scripts/check-inventory.js && node --check scripts/check-skills.js && node --check scripts/check-crafting.js",
+    "test:catalog": "node scripts/check-catalog.js",
+    "test:inventory": "node scripts/check-inventory.js",
+    "test:skills": "node scripts/check-skills.js",
+    "test:crafting": "node scripts/check-crafting.js",
+    "test": "npm run check && npm run test:catalog && npm run test:inventory && npm run test:skills && npm run test:crafting"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "minecraft-data": "^3.109.1",
+    "mineflayer": "^4.37.0",
+    "mineflayer-pathfinder": "^2.4.5"
+  }
+}
