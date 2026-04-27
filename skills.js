@@ -6,6 +6,11 @@ const {
 } = require('./action-result')
 
 const VALID_RISKS = new Set(['low', 'medium', 'high'])
+const PLANNER_EXPLICIT_ONLY_SKILLS = new Set([
+  'inventory.drop',
+  'survival.set_enabled',
+  'containers.clear_memory'
+])
 
 function asArray (value) {
   if (value == null) return []
@@ -163,6 +168,48 @@ async function runChecks (checks, args, context) {
   return failures
 }
 
+function defaultPlannerPolicy (skill, args, context) {
+  if (!context.plannerMode) return null
+  if (context.explicitUserIntent === true) return null
+
+  if (PLANNER_EXPLICIT_ONLY_SKILLS.has(skill.id)) {
+    return {
+      ok: false,
+      reason: `${skill.id} exige permissao explicita do usuario para planner`,
+      missingRequirements: [requirement('permission', { name: 'explicitUserIntent', skill: skill.id })],
+      suggestedNextActions: [suggestSkillAction('state.planner_snapshot', {}, 'reavaliar estado e pedir confirmacao ao usuario')]
+    }
+  }
+
+  if (skill.id === 'movement.go_to') {
+    const currentPosition = context.bot?.entity?.position
+    if (!currentPosition) return null
+    const dx = Number(args.x) - currentPosition.x
+    const dy = Number(args.y) - currentPosition.y
+    const dz = Number(args.z) - currentPosition.z
+    const distance = Math.sqrt(dx * dx + dy * dy + dz * dz)
+    if (distance > 48) {
+      return {
+        ok: false,
+        reason: `movement.go_to distante demais para planner sem confirmacao (${Math.round(distance)} blocos)`,
+        missingRequirements: [requirement('permission', { name: 'explicitUserIntent', skill: skill.id })],
+        suggestedNextActions: [suggestSkillAction('state.planner_snapshot', {}, 'reavaliar rota antes de pedir confirmacao')]
+      }
+    }
+  }
+
+  if (skill.id === 'collection.collect' && Number(args.count || 1) > 3) {
+    return {
+      ok: false,
+      reason: 'collection.collect acima de 3 blocos exige permissao explicita do usuario para planner',
+      missingRequirements: [requirement('permission', { name: 'explicitUserIntent', skill: skill.id })],
+      suggestedNextActions: [suggestSkillAction('state.planner_snapshot', {}, 'reavaliar necessidade antes de pedir confirmacao')]
+    }
+  }
+
+  return null
+}
+
 function estimateCost (skill, args, context) {
   if (typeof skill.estimateCost === 'function') {
     try {
@@ -194,6 +241,7 @@ function withExecutionTimeout (promise, timeoutMs, label) {
 function createSkillRegistry (options = {}) {
   const skills = new Map()
   const defaultContext = options.defaultContext || {}
+  const plannerPolicy = typeof options.plannerPolicy === 'function' ? options.plannerPolicy : defaultPlannerPolicy
 
   function register (definition) {
     if (!definition?.id) throw new Error('skill sem id')
@@ -276,14 +324,20 @@ function createSkillRegistry (options = {}) {
       .filter(Boolean)
     const requirementFailures = requirementResults.map(result => result.reason)
     const preconditionFailures = await runChecks(asArray(skill.preconditions), validation.args, mergedContext)
+    const policyFailures = await runChecks([plannerPolicy ? (checkedArgs, checkedContext) => plannerPolicy(skill, checkedArgs, checkedContext) : null], validation.args, mergedContext)
     const preconditionReasons = preconditionFailures.map(failure => failure.reason)
+    const policyReasons = policyFailures.map(failure => failure.reason)
     const missingRequirements = [
       ...validation.missingRequirements,
       ...requirementResults.map(result => result.missingRequirement).filter(Boolean),
-      ...preconditionFailures.flatMap(failure => failure.missingRequirements || [])
+      ...preconditionFailures.flatMap(failure => failure.missingRequirements || []),
+      ...policyFailures.flatMap(failure => failure.missingRequirements || [])
     ]
-    const suggestedNextActions = preconditionFailures.flatMap(failure => failure.suggestedNextActions || [])
-    const failures = [...validation.errors, ...requirementFailures, ...preconditionReasons]
+    const suggestedNextActions = [
+      ...preconditionFailures.flatMap(failure => failure.suggestedNextActions || []),
+      ...policyFailures.flatMap(failure => failure.suggestedNextActions || [])
+    ]
+    const failures = [...validation.errors, ...requirementFailures, ...preconditionReasons, ...policyReasons]
 
     return {
       ok: failures.length === 0,
@@ -368,5 +422,6 @@ function createSkillRegistry (options = {}) {
 
 module.exports = {
   createSkillRegistry,
-  validateArgs
+  validateArgs,
+  defaultPlannerPolicy
 }

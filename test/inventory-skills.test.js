@@ -5,6 +5,7 @@ const { createMinecraftCatalog } = require('../catalog')
 const { createInventoryHelpers } = require('../inventory')
 const { actionOk, actionFail, itemRequirement, suggestSkillAction } = require('../action-result')
 const { createSkillRegistry, validateArgs } = require('../skills')
+const { createStateReporter } = require('../state')
 
 function createMockInventory () {
   const mcData = minecraftData('1.20.4')
@@ -168,6 +169,87 @@ test('SkillRegistry usa resultados reais das skills de inventario', async () => 
   const missingHotbar = await registry.execute('inventory.hotbar', { slot: 2, item: 'diamond' })
   assert.equal(missingHotbar.ok, false)
   assert.equal(missingHotbar.code, 'item_not_found')
+})
+
+test('state reporter oferece snapshot compacto para planner', () => {
+  const { inventory, bot } = createMockInventory()
+  const stateReporter = createStateReporter({
+    getBot: () => bot,
+    config: { username: 'MineGPT', owner: 'NWintendo' },
+    inventory,
+    perception: {
+      perceptionState: { objective: 'survive' },
+      getWorldTokens: () => [
+        { kind: 'block', name: 'coal_ore', category: 'ore', score: 92, distance: 4.25, position: { x: 11, y: 64, z: -7 }, heads: { resource: 90, danger: 0 }, recommendedAction: 'collect' },
+        { kind: 'entity', name: 'zombie', category: 'hostile_mob', score: 80, distance: 7, position: { x: 14, y: 64, z: -5 }, heads: { resource: 0, danger: 85 }, recommendedAction: 'avoid' }
+      ],
+      describePerceptionCache: () => 'cache ok'
+    },
+    survival: {
+      state: { enabled: true },
+      assess: () => ({ severity: 'low', top: 'ok', summary: 'seguro' })
+    },
+    collectionState: { recent: [] },
+    getActiveSkill: () => null,
+    getNavigationController: () => ({ describe: () => 'parado' }),
+    getReconnecting: () => false,
+    getContainers: () => ({
+      getStateSnapshot: () => ({ knownCount: 2, lastScanAgeMs: 1000, roles: ['blocks', 'wood'] })
+    })
+  })
+
+  const snapshot = stateReporter.getPlannerSnapshot()
+  assert.equal(snapshot.online, true)
+  assert.equal(snapshot.canAct, true)
+  assert.deepEqual(snapshot.vitals.position, { x: 10.3, y: 64, z: -5.5 })
+  assert.deepEqual(snapshot.inventory[0], { name: 'bread', count: 3 })
+  assert.equal(snapshot.attention.top.length, 2)
+  assert.equal(snapshot.attention.hazards[0].name, 'zombie')
+  assert.equal(snapshot.containers.known, 2)
+  assert.match(stateReporter.describeForPlanner(), /"canAct":true/)
+})
+
+test('planner policy bloqueia acoes destrutivas ou grandes sem permissao explicita', async () => {
+  const registry = createSkillRegistry({
+    defaultContext: {
+      bot: { entity: { position: { x: 0, y: 64, z: 0 } } },
+      plannerMode: true
+    }
+  })
+
+  registry.register({
+    id: 'inventory.drop',
+    inputSchema: { item: 'string' },
+    run: ({ item }) => actionOk('inventory.drop', `drop ${item}`)
+  })
+  registry.register({
+    id: 'collection.collect',
+    inputSchema: { target: 'string', count: 'number optional max 10' },
+    run: ({ target }) => actionOk('collection.collect', `collect ${target}`)
+  })
+  registry.register({
+    id: 'movement.go_to',
+    inputSchema: { x: 'number', y: 'number', z: 'number' },
+    run: ({ x, y, z }) => actionOk('movement.go_to', `${x} ${y} ${z}`)
+  })
+
+  const blockedDrop = await registry.execute('inventory.drop', { item: 'coal' })
+  assert.equal(blockedDrop.ok, false)
+  assert.equal(blockedDrop.code, 'precondition_failed')
+  assert.match(blockedDrop.reason, /permissao explicita/)
+
+  const blockedCollect = await registry.execute('collection.collect', { target: 'stone', count: 4 })
+  assert.equal(blockedCollect.ok, false)
+  assert.equal(blockedCollect.code, 'precondition_failed')
+  assert.match(blockedCollect.reason, /acima de 3/)
+
+  const blockedMove = await registry.execute('movement.go_to', { x: 100, y: 64, z: 0 })
+  assert.equal(blockedMove.ok, false)
+  assert.equal(blockedMove.code, 'precondition_failed')
+  assert.match(blockedMove.reason, /distante demais/)
+
+  const allowedWithExplicitIntent = await registry.execute('inventory.drop', { item: 'coal' }, { explicitUserIntent: true })
+  assert.equal(allowedWithExplicitIntent.ok, true)
 })
 
 test('ActionResult padroniza sucesso e falha', () => {

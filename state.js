@@ -78,6 +78,81 @@ function createStateReporter ({
     }
   }
 
+  function compactInventoryObjects (limit = 16) {
+    return inventory.summarizeInventory()
+      .slice(0, limit)
+      .map((entry) => {
+        const match = entry.match(/^(\d+)x\s+(.+)$/)
+        if (!match) return { name: entry, count: null }
+        return { name: match[2], count: Number(match[1]) }
+      })
+  }
+
+  function getPlannerSnapshot () {
+    const bot = getBot()
+    const activeSkill = getActiveSkill()?.name || null
+    const reconnecting = Boolean(getReconnecting())
+
+    if (!bot?.entity) {
+      return {
+        online: false,
+        username: config.username,
+        owner: config.owner,
+        canAct: false,
+        busy: Boolean(activeSkill),
+        reconnecting,
+        activeSkill
+      }
+    }
+
+    const tokens = perception.getWorldTokens()
+    const survivalStatus = survival.assess()
+    const containerState = getContainers?.()?.getStateSnapshot?.() || null
+    const hazards = tokens.filter(token => token.heads?.danger >= 35)
+
+    return {
+      online: true,
+      username: bot.username,
+      owner: config.owner,
+      canAct: !reconnecting && !activeSkill && survivalStatus.severity !== 'critical',
+      busy: Boolean(activeSkill),
+      reconnecting,
+      activeSkill,
+      vitals: {
+        health: bot.health,
+        food: bot.food,
+        saturation: Math.round((bot.foodSaturation || 0) * 10) / 10,
+        oxygen: bot.oxygenLevel ?? null,
+        position: positionSnapshot(bot.entity.position)
+      },
+      heldItem: bot.heldItem ? { name: bot.heldItem.name, count: bot.heldItem.count } : null,
+      inventory: compactInventoryObjects(16),
+      objective: perception.perceptionState.objective,
+      attention: {
+        top: compactTokens(tokens, 5),
+        hazards: compactTokens(hazards, 3),
+        resources: compactTokens(tokens.filter(token => token.heads?.resource >= 35 || token.heads?.opportunity >= 55), 5)
+      },
+      survival: {
+        enabled: survival.state.enabled,
+        severity: survivalStatus.severity,
+        top: survivalStatus.top,
+        safeToAct: survivalStatus.severity !== 'critical' && survivalStatus.severity !== 'high'
+      },
+      navigation: {
+        summary: getNavigationController()?.describe() || 'sem navigation controller'
+      },
+      containers: containerState
+        ? {
+            known: containerState.knownCount,
+            recentlyScanned: containerState.lastScanAgeMs != null ? containerState.lastScanAgeMs < 300000 : null,
+            topRoles: containerState.roles || []
+          }
+        : null,
+      recentCollections: collectionState.recent.slice(0, 3)
+    }
+  }
+
   function describeForChat () {
     const state = getStateSnapshot()
     if (!state.online) return `Estado: offline reconnecting=${state.reconnecting}`
@@ -96,12 +171,13 @@ function createStateReporter ({
   }
 
   function describeForPlanner () {
-    const state = getStateSnapshot()
+    const state = getPlannerSnapshot()
     return JSON.stringify(state)
   }
 
   return {
     getStateSnapshot,
+    getPlannerSnapshot,
     describeForChat,
     describeForPlanner
   }

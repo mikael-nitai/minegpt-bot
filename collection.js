@@ -1,5 +1,6 @@
 const MAX_COLLECT_SEQUENCE = 10
 const COLLECT_SEQUENCE_TIMEOUT_MS = 90000
+const { actionOk, actionFail, suggestSkillAction } = require('./action-result')
 
 function createCollectionSystem ({
   context,
@@ -662,6 +663,124 @@ function createCollectionSystem ({
     }
   }
 
+  function collectionFailureCode (message) {
+    if (/nao encontrei alvo coletavel/.test(message)) return 'target_not_found'
+    if (/vida baixa|lava|perto demais|risco detectado|nao vou coletar/.test(message)) return 'unsafe_area'
+    if (/inventario sem espaco/.test(message)) return 'inventory_full'
+    if (/ferramenta|picareta|machado/.test(message)) return 'missing_tool'
+    if (/timeout|excedeu/.test(message)) return 'timeout'
+    if (/alcance fisico|linha livre|interagivel/.test(message)) return 'target_unreachable'
+    if (/interrompida|cancelada/.test(message)) return 'cancelled'
+    if (/reconectou|reconectando/.test(message)) return 'bot_reconnecting'
+    return 'collection_failed'
+  }
+
+  async function collectByTargetAction (targetQuery, requestedCount = 1) {
+    const startedAt = Date.now()
+    const count = Math.min(Math.max(Number(requestedCount) || 1, 1), MAX_COLLECT_SEQUENCE)
+
+    if (context.activeSkill) {
+      return actionFail('collection.collect', `Ja estou executando ${context.activeSkill.name}.`, { target: targetQuery, count }, startedAt, {
+        code: 'active_skill_busy',
+        retryable: true,
+        suggestedNextActions: [suggestSkillAction('movement.stop', {}, 'cancelar a skill atual antes de coletar')]
+      })
+    }
+
+    const skill = startSkill('coletar')
+    const before = inventorySnapshot()
+    const totalGains = new Map()
+    const blocks = []
+    let attempts = 0
+    let stopReason = null
+
+    context.navigationController.stop('skill collection.collect')
+
+    try {
+      for (let index = 1; index <= count; index++) {
+        assertSkillActive(skill)
+        if (Date.now() - startedAt > COLLECT_SEQUENCE_TIMEOUT_MS) {
+          stopReason = 'timeout total'
+          break
+        }
+
+        attempts += 1
+        const result = await collectOneBlockByTarget(targetQuery, skill, { announce: false })
+        blocks.push({
+          blockName: result.blockName,
+          source: result.source,
+          tool: result.tool,
+          gains: result.gains
+        })
+
+        for (const item of result.gains) {
+          totalGains.set(item.name, (totalGains.get(item.name) || 0) + item.count)
+        }
+      }
+
+      const gains = [...totalGains.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([name, itemCount]) => ({ name, count: itemCount }))
+      const inventoryDelta = diffInventorySnapshots(before, inventorySnapshot())
+
+      if (attempts === 0 || blocks.length === 0) {
+        return actionFail('collection.collect', stopReason || `Nao coletei ${targetQuery}.`, {
+          target: targetQuery,
+          requestedCount: requestedCount,
+          attempted: attempts,
+          collectedBlocks: blocks
+        }, startedAt, {
+          code: collectionFailureCode(stopReason || 'collection_failed'),
+          retryable: true,
+          worldChanged: false,
+          inventoryDelta
+        })
+      }
+
+      const partial = blocks.length < count
+      const message = partial
+        ? `Coleta parcial: ${blocks.length}/${count} bloco(s) de ${targetQuery}.`
+        : `Coleta concluida: ${blocks.length}/${count} bloco(s) de ${targetQuery}.`
+
+      return actionOk('collection.collect', message, {
+        target: targetQuery,
+        requestedCount: requestedCount,
+        effectiveCount: count,
+        attempted: attempts,
+        collectedBlocks: blocks,
+        gains
+      }, startedAt, {
+        code: partial ? 'partial_success' : 'collected',
+        severity: partial ? 'warning' : 'info',
+        retryable: partial,
+        worldChanged: true,
+        inventoryDelta
+      })
+    } catch (err) {
+      const message = err.message || String(err)
+      const inventoryDelta = diffInventorySnapshots(before, inventorySnapshot())
+      return actionFail('collection.collect', `Falha ao coletar: ${message}`, {
+        target: targetQuery,
+        requestedCount: requestedCount,
+        effectiveCount: count,
+        attempted: attempts,
+        collectedBlocks: blocks
+      }, startedAt, {
+        code: collectionFailureCode(message),
+        retryable: !/cancelled|bot_reconnecting/.test(collectionFailureCode(message)),
+        worldChanged: blocks.length > 0,
+        inventoryDelta,
+        suggestedNextActions: [
+          suggestSkillAction('state.snapshot', {}, 'reavaliar mundo antes de tentar novamente')
+        ]
+      })
+    } finally {
+      bot().pathfinder.stop()
+      bot().clearControlStates()
+      finishSkill(skill)
+    }
+  }
+
   return {
     MAX_COLLECT_SEQUENCE,
     collectionState,
@@ -672,6 +791,7 @@ function createCollectionSystem ({
     describeDroppedItemEntity,
     collectDropsAround,
     runAutoDropCollection,
+    collectByTargetAction,
     collectBlockByTarget,
     collectMultipleBlocksByTarget
   }

@@ -218,12 +218,7 @@ function setupSkillRegistry ({
     plannerHints: 'Use para transformar percepcao em recurso; prefere alvos visiveis e seguros.',
     run: async ({ target, count = 1 }) => {
       if (!target) return actionFail('collection.collect', 'alvo ausente')
-      if (count > 1) {
-        await collection.collectMultipleBlocksByTarget(target, count)
-      } else {
-        await collection.collectBlockByTarget(target)
-      }
-      return actionOk('collection.collect', `coleta solicitada: ${count}x ${target}`, { target, count })
+      return collection.collectByTargetAction(target, count)
     }
   })
 
@@ -405,6 +400,18 @@ function setupSkillRegistry ({
     cost: { base: 1 },
     plannerHints: 'Use como principal leitura estruturada antes de planejar.',
     run: () => actionOk('state.snapshot', 'estado atual', stateReporter.getStateSnapshot())
+  })
+
+  registry.register({
+    id: 'state.planner_snapshot',
+    description: 'Retorna estado compacto para uma futura IA planejadora.',
+    risk: 'low',
+    timeoutMs: 1000,
+    requires: ['botOnline', 'stateReporter'],
+    effects: [],
+    cost: { base: 1 },
+    plannerHints: 'Use como leitura preferencial para LLM; mais compacto que state.snapshot.',
+    run: () => actionOk('state.planner_snapshot', 'estado compacto para planner', stateReporter.getPlannerSnapshot())
   })
 
   return registry

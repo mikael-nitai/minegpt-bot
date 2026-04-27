@@ -42,6 +42,7 @@ Estas skills ja retornam `ActionResult` real ou sao consultas simples:
 - `crafting.craft`: relativamente boa. Ja retorna `missingRequirements` e `suggestedNextActions` para faltas de material e crafting table.
 - `inventory.equip`: retorna `ActionResult` honesto para sucesso, item ausente, nome ambiguo e falha de equipar.
 - `inventory.hotbar`: retorna `ActionResult` honesto para sucesso, slot invalido, item ausente, nome ambiguo e falha de mover slot.
+- `collection.collect`: agora usa action planejavel que retorna `ActionResult` com `code`, `worldChanged`, ganhos e `inventoryDelta`.
 - `blocks.place`: boa base para planner experimental. Valida bloco, risco, posicao, suporte e confirmacao final.
 - `containers.scan`: aceitavel. Tem limites de raio/quantidade/timeout e memoria.
 - `containers.search`: aceitavel. Busca em memoria e containers proximos, mas falhas ainda poderiam ter `code` mais especifico.
@@ -56,14 +57,14 @@ Estas skills existem, mas `ok=true` nao significa necessariamente que a tarefa t
 - `movement.follow_owner`: retorna sucesso apos definir goal continuo, nao apos acompanhar de fato.
 - `movement.come_here`: retorna sucesso apos definir goal, nao apos chegar.
 - `movement.go_to`: retorna sucesso apos definir goal, nao apos chegar nas coordenadas.
-- `inventory.drop`: agora retorna falha honesta para item ausente/quantidade invalida, mas continua sendo acao destrutiva e deve exigir policy/limite antes de ser liberada para autonomia ampla.
+- `inventory.drop`: agora retorna falha honesta para item ausente/quantidade invalida; em `plannerMode`, a policy inicial exige permissao explicita do usuario.
 - `drops.collect`: retorna sucesso mesmo se nenhum item foi coletado; o planner precisa verificar `data.gains`.
 
 ### Nao Prontas Para IA Sem Ajuste
 
-Estas skills chamam funcoes de comando de chat ou wrappers que podem apenas mandar mensagem de erro e retornar `undefined`, causando falso sucesso no registry:
+No momento, as skills prioritarias de inventario e coleta nao dependem mais de wrappers de chat para indicar sucesso/falha ao `SkillRegistry`.
 
-- `collection.collect`: chama `collection.collectBlockByTarget()` ou `collectMultipleBlocksByTarget()`, que capturam erro internamente, escrevem no chat e nao retornam `ActionResult`. A skill pode retornar `ok=true` mesmo quando a coleta falhou.
+Pendencia restante nesta categoria: revisar gradualmente skills de movimento continuo, porque elas ainda retornam sucesso quando o goal foi iniciado, nao quando foi concluido.
 
 ## Modulos Que Misturam Chat Command E Skill Planejavel
 
@@ -83,9 +84,9 @@ Estado atual: inventario ja foi corrigido; aplicar o mesmo padrao gradualmente p
 
 ### `collection.js`
 
-Tem uma boa funcao interna `collectOneBlockByTarget()`, mas as funcoes publicas usadas por comando humano (`collectBlockByTarget`, `collectMultipleBlocksByTarget`) capturam erro e falam no chat. O `SkillRegistry` usa essas funcoes publicas, entao perde honestidade.
+Tem uma boa funcao interna `collectOneBlockByTarget()`. A skill planejavel agora chama `collectByTargetAction()`, que retorna `ActionResult`.
 
-Recomendacao: exportar uma acao planejavel como `collectByTargetAction(target, count)` que retorna `ActionResult` com ganhos, falhas, limites e requisitos.
+As funcoes publicas usadas por comando humano (`collectBlockByTarget`, `collectMultipleBlocksByTarget`) continuam falando no chat para preservar UX atual.
 
 ### `navigation.js`
 
@@ -95,10 +96,9 @@ Recomendacao: criar skills planejaveis separadas para `movement.goto_completed` 
 
 ## ActionResult Que Precisa Ficar Mais Honesto
 
-Prioridade alta:
+Prioridade alta restante:
 
-- `inventory.drop`: ja retorna `code`, `inventoryDelta` negativo e `worldChanged: true`; ainda precisa de policy de permissao para planner por ser destrutiva.
-- `collection.collect`: retornar `code: target_not_found`, `unsafe_area`, `missing_tool`, `inventory_full`, `collection_no_gain`, `timeout`; preencher `worldChanged` e `inventoryDelta`.
+- `inventory.drop`: ja retorna `code`, `inventoryDelta` negativo e `worldChanged: true`; em `plannerMode`, ja e bloqueada sem permissao explicita.
 - `movement.go_to`/`come_here`: distinguir `goal_started` de `goal_reached`. Para planner, preferir skill que aguarde conclusao.
 
 Prioridade media:
@@ -112,7 +112,7 @@ Prioridade media:
 
 ## Estado Para Planner
 
-`stateReporter.getStateSnapshot()` ja e adequado para uma primeira versao experimental, mas nao e ideal como prompt direto:
+`stateReporter.getStateSnapshot()` ja e adequado para debug. Para a IA, existe tambem `getPlannerSnapshot()`, mais compacto e estavel.
 
 Pontos fortes:
 
@@ -134,7 +134,7 @@ Limites:
 - containers podem ficar verbosos com itens e roles.
 - nao ha campo explicito de `canAct`, `safeToAct`, `busy`, `recommendedImmediateAction`.
 
-Recomendacao: criar depois um `getPlannerSnapshot()` compacto e estavel, sem remover `getStateSnapshot()`:
+Formato conceitual usado por `getPlannerSnapshot()`:
 
 ```text
 {
@@ -196,16 +196,17 @@ Riscos aceitaveis para primeira versao experimental:
 
 ### P0 - Obrigatorio Antes Do Primeiro Planner
 
-1. Corrigir `collection.collect` no registry para usar uma funcao que retorna `ActionResult`, nao wrapper de chat.
-2. Separar skills de movimento em:
+1. Separar skills de movimento em:
    - iniciar movimento/follow;
    - movimento concluido com validacao final.
-3. Criar `getPlannerSnapshot()` compacto em `state.js`.
-4. Adicionar policy simples de permissao para planner:
-   - allow read-only sempre;
-   - allow low/medium action com limites;
-   - bloquear drop, survival off, clear memory e coords distantes salvo comando explicito.
-5. Manter inventario como exemplo de fronteira correta: actions estruturadas em modulo de dominio, comandos de chat como adaptadores, `SkillRegistry` chamando actions diretamente.
+2. Manter inventario e coleta como exemplos de fronteira correta: actions estruturadas em modulo de dominio, comandos de chat como adaptadores, `SkillRegistry` chamando actions diretamente.
+3. Expandir policy inicial conforme surgirem comandos `bot` reais.
+
+Ja resolvido:
+
+- `collection.collect` no registry usa `collectByTargetAction()`.
+- `getPlannerSnapshot()` foi adicionado em `state.js`.
+- `SkillRegistry` tem policy inicial opcional em `plannerMode`, bloqueando `inventory.drop`, `survival.set_enabled`, `containers.clear_memory`, movimento distante e coleta acima de 3 blocos sem `explicitUserIntent`.
 
 ### P1 - Muito Recomendado
 
@@ -250,6 +251,8 @@ Os testes que dependem diretamente de Mineflayer real ainda podem ficar manuais/
 - Corrigir `collection.collect` para retornar `ActionResult` real.
 - Adicionar `getPlannerSnapshot()`.
 - Criar policy inicial de skills permitidas para IA.
+
+Estado: fase 1 aplicada em nivel inicial. Ainda falta endurecer movimento concluido e cancelamento real em timeout.
 
 ### Fase 2 - Primeiro Parser `bot`, Sem API Externa
 
