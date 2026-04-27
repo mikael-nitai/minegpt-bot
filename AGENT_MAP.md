@@ -62,8 +62,16 @@ Toda acao planejavel deve retornar ou ser convertida para:
 {
   ok,
   skill,
+  code,
+  severity,
+  retryable,
   message,
   reason,
+  missingRequirements,
+  worldChanged,
+  inventoryDelta,
+  positionDelta,
+  suggestedNextActions,
   data,
   startedAt,
   finishedAt,
@@ -71,7 +79,9 @@ Toda acao planejavel deve retornar ou ser convertida para:
 }
 ```
 
-Use `actionOk`, `actionFail` e `runAction`. Nao crie formatos paralelos para sucesso/falha.
+Use `actionOk`, `actionFail` e `runAction`. Nao crie formatos paralelos para sucesso/falha. Quando uma falha puder ser resolvida por outra acao, preencha `missingRequirements` e `suggestedNextActions`.
+
+`crafting.js` ja retorna faltas de materiais como `missingRequirements` estruturados e sugere acoes como buscar em container ou coletar item no mundo.
 
 ### SkillRegistry
 

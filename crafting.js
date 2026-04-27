@@ -1,4 +1,10 @@
-const { actionOk, actionFail } = require('./action-result')
+const {
+  actionOk,
+  actionFail,
+  itemRequirement,
+  requirement,
+  suggestSkillAction
+} = require('./action-result')
 
 function plannedCraftRuns (desiredCount, recipeResultCount) {
   return Math.max(1, Math.ceil(Math.max(1, Math.floor(desiredCount || 1)) / Math.max(1, recipeResultCount || 1)))
@@ -6,6 +12,20 @@ function plannedCraftRuns (desiredCount, recipeResultCount) {
 
 function plannedCraftOutput (desiredCount, recipeResultCount) {
   return plannedCraftRuns(desiredCount, recipeResultCount) * Math.max(1, recipeResultCount || 1)
+}
+
+function missingRequirementsForCrafting (missing = []) {
+  return missing.map(item => itemRequirement(item.name, item.missing, {
+    needed: item.needed,
+    available: item.available
+  }))
+}
+
+function suggestedActionsForMissingCraftingItems (missing = []) {
+  return missing.flatMap(item => [
+    suggestSkillAction('containers.withdraw', { target: item.name, count: item.missing }, `buscar ${item.name} em containers conhecidos`),
+    suggestSkillAction('collection.collect', { target: item.name, count: item.missing }, `coletar ${item.name} no mundo se houver alvo acessivel`)
+  ])
 }
 
 function createCraftingHelpers ({
@@ -188,12 +208,24 @@ function createCraftingHelpers ({
     const recipeInfo = anyRecipeForItem(itemName, table)
 
     if (!recipeInfo) {
-      return actionFail('crafting.craft', `nao encontrei receita para ${itemName}`, { itemName })
+      return actionFail('crafting.craft', `nao encontrei receita para ${itemName}`, { itemName }, Date.now(), {
+        code: 'recipe_not_found',
+        retryable: false,
+        missingRequirements: [requirement('recipe', { item: itemName })]
+      })
     }
 
     if (recipeInfo.requiresTable && !table) {
       askForCraftingTable()
-      return actionFail('crafting.craft', `preciso de crafting table para ${itemName}`, { itemName })
+      return actionFail('crafting.craft', `preciso de crafting table para ${itemName}`, { itemName }, Date.now(), {
+        code: 'missing_crafting_table',
+        retryable: true,
+        missingRequirements: [itemRequirement('crafting_table', 1)],
+        suggestedNextActions: [
+          suggestSkillAction('containers.withdraw', { target: 'crafting_table', count: 1 }, 'buscar crafting table em container'),
+          suggestSkillAction('crafting.craft', { target: 'crafting_table', count: 1 }, 'craftar crafting table se houver madeira')
+        ]
+      })
     }
 
     const resultCount = resultCountFromRecipe(recipeInfo.recipe)
@@ -201,12 +233,21 @@ function createCraftingHelpers ({
     const missing = scaledRecipeMissingItems(recipeInfo.recipe, craftRuns)
     if (missing.length > 0) {
       askForMaterials(missing)
-      return actionFail('crafting.craft', `materiais insuficientes para ${desiredCount}x ${itemName}`, { itemName, desiredCount, craftRuns, missing })
+      return actionFail('crafting.craft', `materiais insuficientes para ${desiredCount}x ${itemName}`, { itemName, desiredCount, craftRuns, missing }, Date.now(), {
+        code: 'missing_materials',
+        retryable: true,
+        missingRequirements: missingRequirementsForCrafting(missing),
+        suggestedNextActions: suggestedActionsForMissingCraftingItems(missing)
+      })
     }
 
     const available = availableRecipeForItem(itemName, desiredCount, table)
     if (!available) {
-      return actionFail('crafting.craft', `receita indisponivel para ${desiredCount}x ${itemName}`, { itemName, desiredCount, craftRuns })
+      return actionFail('crafting.craft', `receita indisponivel para ${desiredCount}x ${itemName}`, { itemName, desiredCount, craftRuns }, Date.now(), {
+        code: 'recipe_unavailable',
+        retryable: true,
+        missingRequirements: [requirement('recipeAvailability', { item: itemName, desiredCount })]
+      })
     }
 
     const targetTable = available.table ? await moveToCraftingTable(available.table) : null
@@ -227,10 +268,19 @@ function createCraftingHelpers ({
     const gains = inventory.diffInventorySnapshots(before, after)
 
     if (gained < desiredCount) {
-      return actionFail('crafting.craft', `craft executado, mas nao detectei ${itemName} novo`, { itemName, gains })
+      return actionFail('crafting.craft', `craft executado, mas nao detectei ${itemName} novo`, { itemName, gains }, Date.now(), {
+        code: 'craft_validation_failed',
+        retryable: true,
+        inventoryDelta: gains,
+        suggestedNextActions: [
+          suggestSkillAction('state.snapshot', {}, 'verificar inventario apos craft sem ganho detectado')
+        ]
+      })
     }
 
-    return actionOk('crafting.craft', `craftei ${gained}x ${itemName}`, { itemName, requested: desiredCount, craftRuns, recipeResultCount: resultCount, gained, gains })
+    return actionOk('crafting.craft', `craftei ${gained}x ${itemName}`, { itemName, requested: desiredCount, craftRuns, recipeResultCount: resultCount, gained, gains }, Date.now(), {
+      inventoryDelta: gains
+    })
   }
 
   async function craftBasicDependencies (itemName, count, skill, depth = 0) {
@@ -374,5 +424,7 @@ function createCraftingHelpers ({
 module.exports = {
   createCraftingHelpers,
   plannedCraftRuns,
-  plannedCraftOutput
+  plannedCraftOutput,
+  missingRequirementsForCrafting,
+  suggestedActionsForMissingCraftingItems
 }

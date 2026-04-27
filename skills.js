@@ -1,4 +1,9 @@
-const { actionFail, runAction } = require('./action-result')
+const {
+  actionFail,
+  requirement,
+  runAction,
+  suggestSkillAction
+} = require('./action-result')
 
 const VALID_RISKS = new Set(['low', 'medium', 'high'])
 
@@ -61,6 +66,7 @@ function validateValueType (value, type) {
 
 function validateArgs (inputSchema = {}, args = {}) {
   const errors = []
+  const missingRequirements = []
   const cleanArgs = { ...args }
 
   for (const [field, rawRule] of Object.entries(inputSchema)) {
@@ -69,7 +75,10 @@ function validateArgs (inputSchema = {}, args = {}) {
     const missing = value == null || value === ''
 
     if (missing) {
-      if (!rule.optional) errors.push(`${field} ausente`)
+      if (!rule.optional) {
+        errors.push(`${field} ausente`)
+        missingRequirements.push(requirement('argument', { name: field, expected: rawRule }))
+      }
       continue
     }
 
@@ -91,23 +100,54 @@ function validateArgs (inputSchema = {}, args = {}) {
   return {
     ok: errors.length === 0,
     errors,
+    missingRequirements,
     args: cleanArgs
   }
 }
 
 function checkBuiltInRequirement (requirement, context) {
-  if (requirement === 'botOnline') return context.bot ? null : 'bot offline'
-  if (requirement === 'notReconnecting') return context.reconnecting ? 'bot reconectando' : null
-  if (requirement === 'navigationReady') return context.navigationController ? null : 'navegacao indisponivel'
-  if (requirement === 'stateReporter') return context.stateReporter ? null : 'state reporter indisponivel'
+  if (requirement === 'botOnline') {
+    return context.bot ? null : {
+      reason: 'bot offline',
+      missingRequirement: { type: 'state', name: 'botOnline' }
+    }
+  }
+
+  if (requirement === 'notReconnecting') {
+    return context.reconnecting ? {
+      reason: 'bot reconectando',
+      missingRequirement: { type: 'state', name: 'notReconnecting' }
+    } : null
+  }
+
+  if (requirement === 'navigationReady') {
+    return context.navigationController ? null : {
+      reason: 'navegacao indisponivel',
+      missingRequirement: { type: 'state', name: 'navigationReady' }
+    }
+  }
+
+  if (requirement === 'stateReporter') {
+    return context.stateReporter ? null : {
+      reason: 'state reporter indisponivel',
+      missingRequirement: { type: 'state', name: 'stateReporter' }
+    }
+  }
+
   return null
 }
 
 function normalizeCheckResult (result) {
   if (result === true || result == null) return null
-  if (result === false) return 'pre-condicao falhou'
-  if (typeof result === 'string') return result
-  if (result && typeof result === 'object' && result.ok === false) return result.reason || result.message || 'pre-condicao falhou'
+  if (result === false) return { reason: 'pre-condicao falhou', missingRequirements: [], suggestedNextActions: [] }
+  if (typeof result === 'string') return { reason: result, missingRequirements: [], suggestedNextActions: [] }
+  if (result && typeof result === 'object' && result.ok === false) {
+    return {
+      reason: result.reason || result.message || 'pre-condicao falhou',
+      missingRequirements: result.missingRequirements || [],
+      suggestedNextActions: result.suggestedNextActions || []
+    }
+  }
   return null
 }
 
@@ -140,7 +180,12 @@ function withExecutionTimeout (promise, timeoutMs, label) {
 
   let timeoutId = null
   const timeout = new Promise((_, reject) => {
-    timeoutId = setTimeout(() => reject(new Error(`${label} excedeu timeout de ${timeoutMs}ms`)), timeoutMs)
+    timeoutId = setTimeout(() => {
+      const err = new Error(`${label} excedeu timeout de ${timeoutMs}ms`)
+      err.actionCode = 'timeout'
+      err.retryable = true
+      reject(err)
+    }, timeoutMs)
   })
 
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutId))
@@ -215,23 +260,35 @@ function createSkillRegistry (options = {}) {
       return {
         ok: false,
         skill: id,
+        code: 'unknown_skill',
         reason: `skill desconhecida: ${id}`,
-        args
+        args,
+        missingRequirements: [requirement('skill', { id })],
+        suggestedNextActions: []
       }
     }
 
     const mergedContext = mergeContext(defaultContext, context)
     const validation = validateArgs(skill.inputSchema, args)
     const requires = asArray(skill.requires)
-    const requirementFailures = requires
+    const requirementResults = requires
       .map(requirement => checkBuiltInRequirement(requirement, mergedContext))
       .filter(Boolean)
+    const requirementFailures = requirementResults.map(result => result.reason)
     const preconditionFailures = await runChecks(asArray(skill.preconditions), validation.args, mergedContext)
-    const failures = [...validation.errors, ...requirementFailures, ...preconditionFailures]
+    const preconditionReasons = preconditionFailures.map(failure => failure.reason)
+    const missingRequirements = [
+      ...validation.missingRequirements,
+      ...requirementResults.map(result => result.missingRequirement).filter(Boolean),
+      ...preconditionFailures.flatMap(failure => failure.missingRequirements || [])
+    ]
+    const suggestedNextActions = preconditionFailures.flatMap(failure => failure.suggestedNextActions || [])
+    const failures = [...validation.errors, ...requirementFailures, ...preconditionReasons]
 
     return {
       ok: failures.length === 0,
       skill: id,
+      code: failures.length === 0 ? 'ok' : validation.ok ? 'precondition_failed' : 'validation_failed',
       description: skill.description,
       args: validation.args,
       inputSchema: skill.inputSchema,
@@ -244,17 +301,30 @@ function createSkillRegistry (options = {}) {
       plannerHints: skill.plannerHints,
       validation,
       failures,
+      missingRequirements,
+      suggestedNextActions,
       reason: failures.join('; ')
     }
   }
 
   async function execute (id, args = {}, context = {}) {
     const skill = get(id)
-    if (!skill) return actionFail(id, `skill desconhecida: ${id}`)
+    if (!skill) {
+      return actionFail(id, `skill desconhecida: ${id}`, {}, Date.now(), {
+        code: 'unknown_skill',
+        missingRequirements: [requirement('skill', { id })],
+        suggestedNextActions: []
+      })
+    }
 
     const executionPlan = await plan(id, args, context)
     if (!executionPlan.ok) {
-      return actionFail(id, executionPlan.reason || 'pre-condicoes falharam', { plan: executionPlan })
+      return actionFail(id, executionPlan.reason || 'pre-condicoes falharam', { plan: executionPlan }, Date.now(), {
+        code: executionPlan.code,
+        retryable: executionPlan.missingRequirements.length > 0,
+        missingRequirements: executionPlan.missingRequirements,
+        suggestedNextActions: executionPlan.suggestedNextActions
+      })
     }
 
     const mergedContext = mergeContext(defaultContext, context)
@@ -268,7 +338,15 @@ function createSkillRegistry (options = {}) {
 
     const postconditionFailures = await runChecks(asArray(skill.postconditions), executionPlan.args, mergedContext)
     if (postconditionFailures.length > 0) {
-      return actionFail(id, postconditionFailures.join('; '), { result, plan: executionPlan })
+      return actionFail(id, postconditionFailures.map(failure => failure.reason).join('; '), { result, plan: executionPlan }, Date.now(), {
+        code: 'postcondition_failed',
+        retryable: true,
+        missingRequirements: postconditionFailures.flatMap(failure => failure.missingRequirements || []),
+        suggestedNextActions: [
+          ...postconditionFailures.flatMap(failure => failure.suggestedNextActions || []),
+          suggestSkillAction('state.snapshot', {}, 'reavaliar estado depois de pos-condicao falhar')
+        ]
+      })
     }
 
     result.data = {

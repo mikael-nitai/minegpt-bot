@@ -3,7 +3,7 @@ const assert = require('node:assert/strict')
 const minecraftData = require('minecraft-data')
 const { createMinecraftCatalog } = require('../catalog')
 const { createInventoryHelpers } = require('../inventory')
-const { actionOk, actionFail } = require('../action-result')
+const { actionOk, actionFail, itemRequirement, suggestSkillAction } = require('../action-result')
 const { createSkillRegistry, validateArgs } = require('../skills')
 
 function createMockInventory () {
@@ -71,13 +71,25 @@ test('ActionResult padroniza sucesso e falha', () => {
   const ok = actionOk('test.ok', 'feito', { value: 1 }, Date.now() - 5)
   assert.equal(ok.ok, true)
   assert.equal(ok.skill, 'test.ok')
+  assert.equal(ok.code, 'ok')
+  assert.equal(ok.severity, 'info')
+  assert.equal(ok.retryable, false)
   assert.equal(ok.data.value, 1)
   assert.equal(ok.durationMs >= 0, true)
 
-  const fail = actionFail('test.fail', 'falhou')
+  const fail = actionFail('test.fail', 'falhou', {}, Date.now(), {
+    code: 'missing_materials',
+    retryable: true,
+    missingRequirements: [itemRequirement('coal', 1)],
+    suggestedNextActions: [suggestSkillAction('collection.collect', { target: 'coal' }, 'obter material faltante')]
+  })
   assert.equal(fail.ok, false)
+  assert.equal(fail.code, 'missing_materials')
+  assert.equal(fail.retryable, true)
   assert.equal(fail.reason, 'falhou')
   assert.equal(fail.message, 'falhou')
+  assert.deepEqual(fail.missingRequirements, [{ type: 'item', name: 'coal', count: 1 }])
+  assert.equal(fail.suggestedNextActions[0].skill, 'collection.collect')
 })
 
 test('skill registry executa skills e padroniza skill ausente', async () => {
@@ -118,13 +130,18 @@ test('skill registry valida argumentos e pre-condicoes antes de executar', async
 
   const invalid = await registry.execute('demo.requires_bot', { count: 4 }, { bot: {} })
   assert.equal(invalid.ok, false)
+  assert.equal(invalid.code, 'validation_failed')
+  assert.equal(invalid.retryable, true)
   assert.match(invalid.reason, /text ausente/)
   assert.match(invalid.reason, /count deve ser <= 3/)
+  assert.deepEqual(invalid.missingRequirements, [{ type: 'argument', name: 'text', expected: 'string' }])
   assert.equal(executed, false)
 
   const noBotPlan = await registry.plan('demo.requires_bot', { text: 'ok' })
   assert.equal(noBotPlan.ok, false)
+  assert.equal(noBotPlan.code, 'precondition_failed')
   assert.match(noBotPlan.reason, /bot offline/)
+  assert.deepEqual(noBotPlan.missingRequirements, [{ type: 'state', name: 'botOnline' }])
 
   const okPlan = await registry.plan('demo.requires_bot', { text: 'ok', count: 2 }, { bot: {} })
   assert.equal(okPlan.ok, true)
@@ -160,5 +177,7 @@ test('skill registry aplica timeout e validacao standalone', async () => {
 
   const result = await registry.execute('demo.timeout')
   assert.equal(result.ok, false)
+  assert.equal(result.code, 'timeout')
+  assert.equal(result.retryable, true)
   assert.match(result.reason, /timeout/)
 })

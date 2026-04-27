@@ -229,7 +229,7 @@ Esses comandos expõem estado e skills registradas para a futura camada de lingu
 - `placement.js`: colocacao segura de blocos simples.
 - `containers.js`: memoria e interacao segura com containers.
 - `skills.js`: skill registry para futura IA/planner, com contratos de argumentos, requisitos, efeitos, risco, custo e `plan()`.
-- `action-result.js`: resultado padronizado de acoes.
+- `action-result.js`: resultado padronizado de acoes, com codigos, severidade, retry, requisitos faltantes e sugestoes para planner.
 - `state.js`: snapshot estruturado do estado do bot.
 - `AGENT_MAP.md`: mapa operacional para agentes de codigo depurarem e evoluirem o projeto.
 - `scripts/`: smoke tests e checagem sintatica.
