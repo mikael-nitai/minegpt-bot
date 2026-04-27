@@ -537,7 +537,8 @@ function start () {
     startSkill: null,
     cancelActiveSkill: null,
     assertSkillActive: null,
-    finishSkill: null
+    finishSkill: null,
+    config
   }
 
   Object.assign(context, createSkillState(context))

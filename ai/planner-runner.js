@@ -1,10 +1,28 @@
 const { decideNextAction } = require('./planner')
 const { validatePlannerDecision } = require('./planner-schema')
 const { skillRegistryToPlannerTools } = require('./tool-adapter')
+const { getSkillsCacheTtlMs } = require('./planner-limits')
 
 const DEFAULT_ALLOWED_RISKS = ['low', 'medium']
 const DEFAULT_MAX_STEPS = 1
 const HARD_MAX_STEPS = 3
+const DEFAULT_RECOVERY_MODE = 'local'
+const VALID_RECOVERY_MODES = new Set(['off', 'local', 'llm'])
+const VALUABLE_ITEM_NAMES = new Set([
+  'diamond',
+  'emerald',
+  'netherite_scrap',
+  'netherite_ingot',
+  'ancient_debris',
+  'gold_ingot',
+  'raw_gold',
+  'gold_block',
+  'diamond_block',
+  'emerald_block',
+  'elytra',
+  'totem_of_undying',
+  'enchanted_golden_apple'
+])
 
 function compactDecision (decision) {
   if (!decision) return null
@@ -57,16 +75,35 @@ function safePlannerState (context) {
     if (typeof context.stateReporter?.getPlannerSnapshot === 'function') return context.stateReporter.getPlannerSnapshot()
   } catch (error) {
     return {
-      online: Boolean(context.bot),
-      activeSkill: context.activeSkill?.name || null,
+      online: Boolean(context?.bot),
+      activeSkill: context?.activeSkill?.name || null,
       snapshotError: error.message
     }
   }
 
   return {
-    online: Boolean(context.bot),
-    activeSkill: context.activeSkill?.name || null
+    online: Boolean(context?.bot),
+    activeSkill: context?.activeSkill?.name || null
   }
+}
+
+function plannerSkillsForContext (context = {}, env = process.env, now = Date.now()) {
+  const skillRegistry = context.skillRegistry
+  const ttlMs = getSkillsCacheTtlMs(context.config || {}, env)
+  if (ttlMs <= 0) return skillRegistryToPlannerTools(skillRegistry)
+
+  const cache = context.plannerSkillsCache
+  if (cache && cache.registry === skillRegistry && Number(cache.expiresAt || 0) > now && Array.isArray(cache.skills)) {
+    return cache.skills
+  }
+
+  const skills = skillRegistryToPlannerTools(skillRegistry)
+  context.plannerSkillsCache = {
+    registry: skillRegistry,
+    expiresAt: now + ttlMs,
+    skills
+  }
+  return skills
 }
 
 function normalizeSeverityLevel (survivalStatus) {
@@ -94,13 +131,128 @@ function actionSignature (action) {
   return `${action.skill}:${JSON.stringify(action.args || {})}`
 }
 
+function failureSignature (action, code) {
+  return `${actionSignature(action)}:${code || 'error'}`
+}
+
+function normalizeRecoveryMode (mode) {
+  const normalized = String(mode || '')
+    .trim()
+    .toLowerCase()
+    .replace(/-/g, '_')
+  return VALID_RECOVERY_MODES.has(normalized) ? normalized : DEFAULT_RECOVERY_MODE
+}
+
+function configuredRecoveryMode (config = {}, env = process.env) {
+  return normalizeRecoveryMode(
+    env.MINEGPT_AI_RECOVERY ||
+    config.ai?.recovery ||
+    config.ai?.recoveryMode ||
+    config.ai?.recovery_mode ||
+    config.recovery ||
+    DEFAULT_RECOVERY_MODE
+  )
+}
+
+function normalizedText (value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase()
+}
+
+function argsMentionValuableItem (args = {}) {
+  const text = normalizedText(JSON.stringify(args || {}))
+  return [...VALUABLE_ITEM_NAMES].some(item => text.includes(item))
+}
+
+function actionRequiresConfirmation ({ skill, args = {}, plan = null } = {}) {
+  const reasons = []
+  const skillId = skill?.id || plan?.skill || ''
+  const risk = skill?.risk || plan?.risk || 'low'
+  const plannedArgs = plan?.args && typeof plan.args === 'object' ? plan.args : args
+
+  if (risk === 'high') reasons.push('risco alto')
+  if (skillId === 'inventory.drop') reasons.push('remove itens do inventario')
+  if (skillId === 'containers.deposit' && plannedArgs.mode === 'all') reasons.push('pode mexer em muitos itens')
+  if (skillId === 'blocks.place' && (plannedArgs.mode === 'coords' || plannedArgs.coords)) reasons.push('altera o mundo em coordenadas')
+  if (skillId === 'movement.go_to') reasons.push('move o bot para coordenadas')
+  if (skill?.requiresConfirmation || skill?.sensitive) reasons.push('skill marcada como sensivel')
+  if (Array.isArray(skill?.effects) && skill.effects.some(effect => /destrut|destruct|danger/i.test(String(effect)))) reasons.push('efeito destrutivo')
+  if (argsMentionValuableItem(plannedArgs)) reasons.push('envolve item valioso')
+
+  return {
+    required: reasons.length > 0,
+    reasons: [...new Set(reasons)]
+  }
+}
+
+function compactConfirmationRequest ({ userMessage, decision, plan, skill, reasons }) {
+  return {
+    userMessage: String(userMessage || '').slice(0, 160),
+    action: decision?.nextAction
+      ? {
+          skill: decision.nextAction.skill,
+          args: decision.nextAction.args || {}
+        }
+      : null,
+    reasonSummary: String(decision?.reasonSummary || '').slice(0, 200),
+    risk: skill?.risk || plan?.risk || decision?.risk || 'low',
+    plan: compactPlan(plan),
+    reasons: Array.isArray(reasons) ? reasons.slice(0, 5) : []
+  }
+}
+
+function suggestedActionPriority (suggestion) {
+  if (suggestion.skill === 'containers.withdraw') return 1
+  if (suggestion.skill === 'collection.collect') return 2
+  if (suggestion.skill === 'crafting.craft') return 3
+  return 99
+}
+
+function normalizeSuggestedAction (suggestion) {
+  if (!suggestion || suggestion.type !== 'skill') return null
+  if (typeof suggestion.skill !== 'string' || suggestion.skill.trim().length === 0) return null
+  if (suggestion.args != null && (typeof suggestion.args !== 'object' || Array.isArray(suggestion.args))) return null
+
+  return {
+    skill: suggestion.skill,
+    args: suggestion.args || {},
+    reason: typeof suggestion.reason === 'string' ? suggestion.reason : ''
+  }
+}
+
+function chooseLocalRecoveryAction (suggestions = [], blockedSignatures = new Set()) {
+  const candidates = suggestions
+    .map(normalizeSuggestedAction)
+    .filter(Boolean)
+    .filter(action => !blockedSignatures.has(actionSignature(action)))
+    .map(action => ({ action, priority: suggestedActionPriority(action) }))
+    .filter(candidate => candidate.priority < 99)
+    .sort((a, b) => a.priority - b.priority)
+
+  if (candidates.length === 0) {
+    return { action: null, status: 'none', reason: 'nenhuma sugestao local segura' }
+  }
+
+  const topPriority = candidates[0].priority
+  const top = candidates.filter(candidate => candidate.priority === topPriority)
+  const topSignatures = new Set(top.map(candidate => actionSignature(candidate.action)))
+  if (topSignatures.size > 1) {
+    return { action: null, status: 'ambiguous', reason: 'sugestoes locais ambiguas' }
+  }
+
+  return { action: top[0].action, status: 'selected', reason: top[0].action.reason || 'sugestao local selecionada' }
+}
+
 function normalizeMaxSteps (maxSteps) {
   const parsed = Number(maxSteps)
   if (!Number.isInteger(parsed) || parsed < 1) return DEFAULT_MAX_STEPS
   return Math.min(parsed, HARD_MAX_STEPS)
 }
 
-function stopRun ({ status, reason, steps, history, decision = null, plan = null, result = null, ok = false }) {
+function stopRun ({ status, reason, steps, history, decision = null, plan = null, result = null, ok = false, confirmation = null }) {
   return {
     ok,
     status,
@@ -109,8 +261,59 @@ function stopRun ({ status, reason, steps, history, decision = null, plan = null
     history,
     decision,
     plan,
-    result
+    result,
+    confirmation
   }
+}
+
+async function planRecoveryAction ({
+  action,
+  skillRegistry,
+  safeContext,
+  survivalGuard,
+  allowedRiskSet,
+  repeatedActions,
+  executionContext,
+  requireConfirmation
+}) {
+  const plannedSkill = skillRegistry.get(action.skill)
+  if (!plannedSkill) return { ok: false, status: 'recovery_invalid', reason: `skill sugerida inexistente: ${action.skill}` }
+
+  if (!allowedRiskSet.has(plannedSkill.risk || 'low')) {
+    return { ok: false, status: 'recovery_risk_blocked', reason: `risco ${plannedSkill.risk} nao permitido na recuperacao` }
+  }
+
+  if (safeContext.activeSkill && action.skill !== 'movement.stop') {
+    return { ok: false, status: 'recovery_active_skill_blocked', reason: `ja estou executando ${safeContext.activeSkill.name}` }
+  }
+
+  const survivalStatus = typeof survivalGuard?.assess === 'function' ? survivalGuard.assess() : null
+  const survivalBlockReason = survivalBlocksPlan(survivalStatus, plannedSkill)
+  if (survivalBlockReason) {
+    return { ok: false, status: 'recovery_survival_blocked', reason: survivalBlockReason }
+  }
+
+  const signature = actionSignature(action)
+  if (repeatedActions.has(signature)) {
+    return { ok: false, status: 'recovery_repetition_blocked', reason: `acao sugerida repetida bloqueada: ${action.skill}` }
+  }
+
+  const plan = await skillRegistry.plan(action.skill, action.args, executionContext)
+  if (!plan.ok) {
+    return { ok: false, status: 'recovery_plan_failed', reason: plan.reason || plan.code || 'plan de recuperacao falhou', plan }
+  }
+
+  const confirmation = actionRequiresConfirmation({ skill: plannedSkill, args: action.args, plan })
+  if (requireConfirmation && confirmation.required) {
+    return {
+      ok: false,
+      status: 'recovery_confirmation_blocked',
+      reason: `recuperacao sensivel exige confirmacao: ${confirmation.reasons.join(', ')}`,
+      plan
+    }
+  }
+
+  return { ok: true, status: 'recovery_planned', reason: 'recuperacao local planejada', plan, plannedSkill }
 }
 
 async function runPlannerCycles ({
@@ -121,25 +324,43 @@ async function runPlannerCycles ({
   maxSteps = DEFAULT_MAX_STEPS,
   dryRun = false,
   allowedRisks = DEFAULT_ALLOWED_RISKS,
-  decide = decideNextAction
+  decide = decideNextAction,
+  requireConfirmation = false,
+  env = process.env,
+  signal = undefined
 }) {
-  const skillRegistry = context.skillRegistry
-  const skills = skillRegistryToPlannerTools(skillRegistry)
+  const safeContext = context || {}
+  const skillRegistry = safeContext.skillRegistry
+  if (!skillRegistry || typeof skillRegistry.get !== 'function' || typeof skillRegistry.plan !== 'function' || typeof skillRegistry.execute !== 'function') {
+    return stopRun({
+      status: 'registry_unavailable',
+      reason: 'skillRegistry indisponivel para planner',
+      steps: 0,
+      history: Array.isArray(history) ? history.slice(-5) : []
+    })
+  }
+
+  const skills = plannerSkillsForContext(safeContext, env)
   const allowedRiskSet = new Set(allowedRisks)
   const stepLimit = normalizeMaxSteps(maxSteps)
+  const recoveryMode = configuredRecoveryMode(safeContext.config || {}, env)
   const runHistory = Array.isArray(history) ? history.slice(-5) : []
   const repeatedActions = new Set()
+  const failedActionSignatures = new Set()
+  const failedActions = new Set()
   let latestDecision = null
   let latestPlan = null
   let latestResult = null
 
   for (let step = 1; step <= stepLimit; step++) {
-    const plannerState = safePlannerState(context)
+    const plannerState = safePlannerState(safeContext)
     const decision = await decide({
       userMessage,
       plannerState,
       skills,
-      history: runHistory
+      history: runHistory,
+      config: safeContext.config || {},
+      signal
     })
     latestDecision = decision
 
@@ -175,14 +396,14 @@ async function runPlannerCycles ({
       return stopRun({ status: 'unknown_skill', reason, steps: step, history: runHistory, decision })
     }
 
-    if (!allowedRiskSet.has(plannedSkill.risk || 'low')) {
+    if (!requireConfirmation && !allowedRiskSet.has(plannedSkill.risk || 'low')) {
       const reason = `risco ${plannedSkill.risk} nao permitido neste runner`
       runHistory.push({ step, decision: compactDecision(decision), status: 'risk_blocked', reason })
       return stopRun({ status: 'risk_blocked', reason, steps: step, history: runHistory, decision })
     }
 
-    if (context.activeSkill && nextAction.skill !== 'movement.stop') {
-      const reason = `ja estou executando ${context.activeSkill.name}`
+    if (safeContext.activeSkill && nextAction.skill !== 'movement.stop') {
+      const reason = `ja estou executando ${safeContext.activeSkill.name}`
       runHistory.push({ step, decision: compactDecision(decision), status: 'active_skill_blocked', reason })
       return stopRun({ status: 'active_skill_blocked', reason, steps: step, history: runHistory, decision })
     }
@@ -220,6 +441,36 @@ async function runPlannerCycles ({
       return stopRun({ status: 'dry_run', reason, steps: step, history: runHistory, decision, plan, ok: true })
     }
 
+    const confirmation = actionRequiresConfirmation({ skill: plannedSkill, args: nextAction.args, plan })
+    const riskAllowed = allowedRiskSet.has(plannedSkill.risk || 'low')
+    if (!riskAllowed && !(requireConfirmation && confirmation.required)) {
+      const reason = `risco ${plannedSkill.risk} nao permitido neste runner`
+      runHistory.push({ step, decision: compactDecision(decision), plan: compactPlan(plan), status: 'risk_blocked', reason })
+      return stopRun({ status: 'risk_blocked', reason, steps: step, history: runHistory, decision, plan })
+    }
+
+    if (requireConfirmation && confirmation.required) {
+      const reason = `acao sensivel exige confirmacao: ${confirmation.reasons.join(', ')}`
+      const confirmationRequest = compactConfirmationRequest({
+        userMessage,
+        decision,
+        plan,
+        skill: plannedSkill,
+        reasons: confirmation.reasons
+      })
+      runHistory.push({ step, decision: compactDecision(decision), plan: compactPlan(plan), status: 'confirmation_required', reason })
+      return stopRun({
+        status: 'confirmation_required',
+        reason,
+        steps: step,
+        history: runHistory,
+        decision,
+        plan,
+        ok: false,
+        confirmation: confirmationRequest
+      })
+    }
+
     const result = await skillRegistry.execute(nextAction.skill, nextAction.args, executionContext)
     latestResult = result
     runHistory.push({
@@ -232,6 +483,97 @@ async function runPlannerCycles ({
     })
 
     if (!result.ok) {
+      failedActionSignatures.add(failureSignature(nextAction, result.code))
+      failedActions.add(actionSignature(nextAction))
+
+      if (step < stepLimit && recoveryMode === 'local') {
+        const blockedRecoverySignatures = new Set([
+          ...repeatedActions,
+          ...failedActions
+        ])
+        const recoveryChoice = chooseLocalRecoveryAction(result.suggestedNextActions, blockedRecoverySignatures)
+        if (recoveryChoice.action) {
+          const recoveryStep = step + 1
+          const recoveryPlan = await planRecoveryAction({
+            action: recoveryChoice.action,
+            skillRegistry,
+            safeContext,
+            survivalGuard,
+            allowedRiskSet,
+            repeatedActions,
+            executionContext,
+            requireConfirmation
+          })
+
+          if (recoveryPlan.ok) {
+            repeatedActions.add(actionSignature(recoveryChoice.action))
+            const recoveryResult = await skillRegistry.execute(recoveryChoice.action.skill, recoveryChoice.action.args, executionContext)
+            runHistory.push({
+              step: recoveryStep,
+              decision: null,
+              plan: compactPlan(recoveryPlan.plan),
+              result: compactActionResult(recoveryResult),
+              status: recoveryResult.ok ? 'recovery_executed' : 'recovery_execute_failed',
+              reason: recoveryResult.ok ? recoveryResult.message : recoveryResult.reason,
+              recovery: {
+                source: 'suggestedNextActions',
+                action: recoveryChoice.action,
+                reason: recoveryChoice.reason
+              }
+            })
+
+            if (recoveryResult.ok) {
+              return stopRun({
+                status: 'completed',
+                reason: recoveryResult.message || 'recuperacao local concluida',
+                steps: recoveryStep,
+                history: runHistory,
+                decision,
+                plan: recoveryPlan.plan,
+                result: recoveryResult,
+                ok: true
+              })
+            }
+
+            failedActionSignatures.add(failureSignature(recoveryChoice.action, recoveryResult.code))
+            failedActions.add(actionSignature(recoveryChoice.action))
+            return stopRun({
+              status: recoveryResult.retryable ? 'execute_failed_retryable' : 'execute_failed',
+              reason: recoveryResult.reason || recoveryResult.message || recoveryResult.code,
+              steps: recoveryStep,
+              history: runHistory,
+              decision,
+              plan: recoveryPlan.plan,
+              result: recoveryResult
+            })
+          }
+
+          runHistory.push({
+            step: recoveryStep,
+            decision: null,
+            plan: compactPlan(recoveryPlan.plan),
+            status: recoveryPlan.status,
+            reason: recoveryPlan.reason,
+            recovery: {
+              source: 'suggestedNextActions',
+              action: recoveryChoice.action,
+              reason: recoveryChoice.reason
+            }
+          })
+        } else if (recoveryChoice.status === 'ambiguous') {
+          runHistory.push({
+            step: step + 1,
+            decision: null,
+            status: 'recovery_ambiguous',
+            reason: recoveryChoice.reason
+          })
+        }
+      }
+
+      if (step < stepLimit && recoveryMode === 'llm') {
+        continue
+      }
+
       return stopRun({
         status: result.retryable ? 'execute_failed_retryable' : 'execute_failed',
         reason: result.reason || result.message || result.code,
@@ -278,7 +620,14 @@ module.exports = {
   compactPlan,
   normalizeSeverityLevel,
   normalizeMaxSteps,
+  actionRequiresConfirmation,
+  actionSignature,
+  chooseLocalRecoveryAction,
+  configuredRecoveryMode,
+  failureSignature,
+  normalizeRecoveryMode,
   DEFAULT_ALLOWED_RISKS,
   DEFAULT_MAX_STEPS,
+  DEFAULT_RECOVERY_MODE,
   HARD_MAX_STEPS
 }

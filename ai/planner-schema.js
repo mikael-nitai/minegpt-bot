@@ -79,9 +79,54 @@ function makePlannerDecision ({
   }
 }
 
+function plannerDecisionJsonSchema (skills = []) {
+  const skillIds = [...skillIdsFromTools(skills)]
+  const skillProperty = skillIds.length > 0
+    ? { type: 'string', enum: skillIds }
+    : { type: 'string', minLength: 1 }
+
+  return {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      intent: { type: 'string', enum: [...VALID_INTENTS] },
+      userGoal: { type: 'string', minLength: 1 },
+      nextAction: {
+        anyOf: [
+          { type: 'null' },
+          {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              skill: skillProperty,
+              args: {
+                type: 'object',
+                additionalProperties: true
+              }
+            },
+            required: ['skill', 'args']
+          }
+        ]
+      },
+      reasonSummary: { type: 'string', minLength: 1, maxLength: 240 },
+      askUser: {
+        anyOf: [
+          { type: 'string' },
+          { type: 'null' }
+        ]
+      },
+      risk: { type: 'string', enum: [...VALID_RISKS] },
+      confidence: { type: 'number', minimum: 0, maximum: 1 },
+      stopAfterThis: { type: 'boolean' }
+    },
+    required: ['intent', 'userGoal', 'nextAction', 'reasonSummary', 'askUser', 'risk', 'confidence', 'stopAfterThis']
+  }
+}
+
 module.exports = {
   VALID_INTENTS,
   VALID_RISKS,
   validatePlannerDecision,
-  makePlannerDecision
+  makePlannerDecision,
+  plannerDecisionJsonSchema
 }

@@ -15,6 +15,13 @@
     "test:placement": "node scripts/check-placement.js",
     "test:containers": "node scripts/check-containers.js",
     "test:smoke": "npm run test:catalog && npm run test:inventory && npm run test:skills && npm run test:crafting && npm run test:placement && npm run test:containers",
+    "llm:check": "node scripts/check-local-llm.js",
+    "llm:setup": "node scripts/setup-local-llm.js",
+    "llm:pull": "node scripts/setup-local-llm.js --pull-only",
+    "llm:bench": "node scripts/bench-local-llm.js",
+    "llm:bench:economia": "MINEGPT_AI_PROFILE=economia node scripts/bench-local-llm.js",
+    "llm:bench:equilibrio": "MINEGPT_AI_PROFILE=equilibrio node scripts/bench-local-llm.js",
+    "llm:bench:performance": "MINEGPT_AI_PROFILE=performance node scripts/bench-local-llm.js",
     "coverage": "node --test --experimental-test-coverage",
     "test": "npm run check && npm run lint && npm run test:unit && npm run test:smoke"
   },

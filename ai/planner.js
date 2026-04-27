@@ -1,132 +1,106 @@
-const { makePlannerDecision, validatePlannerDecision } = require('./planner-schema')
+const { getPlannerProvider, getFallbackPlannerProvider } = require('./providers')
+const { askUserDecision, normalizeText, validateOrAsk } = require('./providers/provider-utils')
+const { defaultAiRateLimiter, getAiMaxCallsPerMinute } = require('./planner-limits')
 
-function normalizeText (text) {
-  return String(text || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .trim()
-}
-
-function hasAny (text, terms) {
-  return terms.some(term => text.includes(term))
-}
-
-function skillExists (skills, id) {
-  return skills.some(skill => skill.id === id)
-}
-
-function executionDecision ({ userGoal, skill, args = {}, reasonSummary, risk = 'low', confidence = 0.75, stopAfterThis = false }) {
-  return makePlannerDecision({
-    intent: 'execute_skill',
-    userGoal,
-    nextAction: { skill, args },
-    reasonSummary,
-    risk,
-    confidence,
-    stopAfterThis
-  })
-}
-
-function askUserDecision (userGoal, askUser, reasonSummary = 'Comando ambiguo para o planner mockado.') {
-  return makePlannerDecision({
-    intent: 'ask_user',
-    userGoal,
-    nextAction: null,
-    reasonSummary,
-    askUser,
-    risk: 'low',
-    confidence: 0.35,
-    stopAfterThis: true
-  })
+function shortErrorMessage (error) {
+  return String(error?.message || error || 'erro desconhecido').slice(0, 180)
 }
 
 async function decideNextAction ({
   userMessage,
   plannerState = {},
   skills = [],
-  history = []
+  history = [],
+  config = {},
+  env = process.env,
+  fetch = undefined,
+  signal = undefined,
+  rateLimiter = defaultAiRateLimiter
 }) {
-  const text = normalizeText(userMessage)
-  const userGoal = String(userMessage || '').trim()
+  const provider = getPlannerProvider(config, env)
   let decision
+  const userGoal = String(userMessage || '').trim() || 'comando vazio'
 
-  if (!text) {
-    decision = askUserDecision(userGoal, 'O que voce quer que eu faca?')
-  } else if (hasAny(text, ['parar', 'pare', 'cancela', 'cancelar'])) {
-    decision = executionDecision({
-      userGoal,
-      skill: 'movement.stop',
-      reasonSummary: 'Usuario pediu para parar.',
-      confidence: 0.95,
-      stopAfterThis: true
+  const shouldRateLimit = provider.name === 'ollama' && (!fetch || rateLimiter !== defaultAiRateLimiter)
+  if (shouldRateLimit) {
+    const rateLimit = rateLimiter.check({
+      key: 'ollama',
+      limit: getAiMaxCallsPerMinute(config, env)
     })
-  } else if (hasAny(text, ['vir aqui', 'vem', 'venha'])) {
-    decision = executionDecision({
-      userGoal,
-      skill: 'movement.come_here',
-      reasonSummary: 'Usuario quer que o bot se aproxime.',
-      confidence: 0.9
-    })
-  } else if (hasAny(text, ['seguir', 'siga'])) {
-    decision = executionDecision({
-      userGoal,
-      skill: 'movement.follow_owner',
-      reasonSummary: 'Usuario quer acompanhamento continuo.',
-      confidence: 0.9
-    })
-  } else if (hasAny(text, ['estado', 'status'])) {
-    decision = executionDecision({
-      userGoal,
-      skill: 'state.snapshot',
-      reasonSummary: 'Usuario pediu leitura do estado.',
-      confidence: 0.85,
-      stopAfterThis: true
-    })
-  } else if (hasAny(text, ['crafting table', 'mesa de trabalho'])) {
-    decision = executionDecision({
-      userGoal,
-      skill: 'crafting.craft',
-      args: { target: 'crafting_table', count: 1 },
-      reasonSummary: 'Usuario pediu uma crafting table.',
-      risk: 'medium',
-      confidence: 0.85,
-      stopAfterThis: true
-    })
-  } else if (hasAny(text, ['madeira', 'tronco', 'arvore', 'arvore'])) {
-    decision = executionDecision({
-      userGoal,
-      skill: 'collection.collect',
-      args: { target: 'madeira', count: 1 },
-      reasonSummary: 'Usuario pediu coleta simples de madeira.',
-      risk: 'medium',
-      confidence: 0.8,
-      stopAfterThis: true
-    })
-  } else {
-    decision = askUserDecision(userGoal, 'Nao entendi ainda. Voce quer que eu va, siga, colete madeira, crafte uma mesa ou mostre estado?')
-  }
 
-  if (decision.intent === 'execute_skill' && !skillExists(skills, decision.nextAction.skill)) {
-    decision = askUserDecision(userGoal, `A skill ${decision.nextAction.skill} nao esta disponivel agora.`, 'Planner mockado escolheu skill ausente.')
-  }
-
-  const validation = validatePlannerDecision(decision, { skills })
-  if (!validation.ok) {
-    return {
-      ...askUserDecision(userGoal, 'Nao consegui montar uma decisao valida para esse pedido.', validation.errors.join('; ')),
-      validation
+    if (!rateLimit.ok) {
+      const seconds = Math.max(1, Math.ceil(rateLimit.retryAfterMs / 1000))
+      const limitedDecision = askUserDecision(
+        userGoal,
+        `Estou recebendo comandos rapido demais; tente em ${seconds} segundo(s).`,
+        `Rate limit local do LLM excedido (${rateLimit.limit}/min).`
+      )
+      return validateOrAsk({
+        decision: limitedDecision,
+        skills,
+        userGoal,
+        mode: provider.name,
+        plannerState,
+        history
+      })
     }
   }
 
+  try {
+    decision = await provider.decideNextAction({ userMessage, plannerState, skills, history, config, env, fetch, signal })
+  } catch (error) {
+    if (error?.code === 'aborted') {
+      const abortedDecision = askUserDecision(
+        userGoal,
+        'Decisao cancelada pelo comando parar.',
+        `Provider ${provider.name} cancelado.`
+      )
+      return validateOrAsk({
+        decision: abortedDecision,
+        skills,
+        userGoal,
+        mode: provider.name,
+        plannerState,
+        history,
+        providerFallback: 'cancelado'
+      })
+    }
+
+    const fallbackProvider = getFallbackPlannerProvider(config, env)
+    if (fallbackProvider) {
+      const fallbackDecision = await fallbackProvider.decideNextAction({ userMessage, plannerState, skills, history, config, env, fetch, signal })
+      return {
+        ...fallbackDecision,
+        planner: {
+          ...fallbackDecision.planner,
+          providerFallback: `${provider.name} falhou: ${shortErrorMessage(error)}; fallback=${fallbackProvider.name}`
+        }
+      }
+    }
+
+    const errorDecision = askUserDecision(
+      userGoal,
+      `Provider ${provider.name} indisponivel: ${shortErrorMessage(error)}`,
+      `Falha no provider ${provider.name}.`
+    )
+    return validateOrAsk({
+      decision: errorDecision,
+      skills,
+      userGoal,
+      mode: provider.name,
+      plannerState,
+      history,
+      providerFallback: shortErrorMessage(error)
+    })
+  }
+
+  if (!provider.fallbackReason || !decision?.planner) return decision
   return {
     ...decision,
     planner: {
-      mode: 'mock',
-      stateSeen: Boolean(plannerState),
-      historySize: Array.isArray(history) ? history.length : 0
-    },
-    validation
+      ...decision.planner,
+      providerFallback: provider.fallbackReason
+    }
   }
 }
 
