@@ -19,6 +19,7 @@ O bot ja possui:
 - interacao com containers: scan, memoria, busca, retirada, deposito e classificacao logistica semantica;
 - Survival Guard com diagnostico, pedidos de ajuda, comida automatica e reacoes curtas;
 - skill registry, ActionResult e snapshot de estado para futuro planner/IA.
+- fundacao de planner em `ai/`, ainda mockada/deterministica e sem API externa.
 
 ## Requisitos
 
@@ -231,6 +232,7 @@ Esses comandos expõem estado e skills registradas para a futura camada de lingu
 - `skills.js`: skill registry para futura IA/planner, com contratos de argumentos, requisitos, efeitos, risco, custo e `plan()`.
 - `action-result.js`: resultado padronizado de acoes, com codigos, severidade, retry, requisitos faltantes e sugestoes para planner.
 - `state.js`: snapshot estruturado do estado do bot.
+- `ai/`: schema de decisao do planner, adapter seguro de skills e planner mockado.
 - `AGENT_MAP.md`: mapa operacional para agentes de codigo depurarem e evoluirem o projeto.
 - `scripts/`: smoke tests e checagem sintatica.
 - `test/`: testes unitarios com `node:test`.

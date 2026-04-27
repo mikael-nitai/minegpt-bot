@@ -22,6 +22,9 @@ mensagem "bot ..."
   -> interpretar intencao
   -> ler stateReporter/planner state
   -> consultar skillRegistry.list()
+  -> converter skills em tools seguras via ai/tool-adapter.js
+  -> decidir uma proxima acao via ai/planner.js
+  -> validar decisao via ai/planner-schema.js
   -> chamar skillRegistry.plan(id, args)
   -> executar skillRegistry.execute(id, args)
   -> observar ActionResult
@@ -252,7 +255,7 @@ Estado: fase 1 aplicada em nivel inicial. Ainda falta evoluir cancelamento real 
 
 ### Fase 2 - Primeiro Parser `bot`, Sem API Externa
 
-- Criar comando `bot ...` local com parser deterministico simples.
+- Conectar comando `bot ...` local ao planner deterministico existente em `ai/planner.js`.
 - Mapear apenas intencoes seguras:
   - `bot vem aqui`;
   - `bot pega X no bau`;

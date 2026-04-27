@@ -48,6 +48,7 @@ index.js
 - `skills.js`: contrato planejavel das skills, `plan()`, validacao, pre/post-condicoes e timeout.
 - `action-result.js`: formato padrao de resultado de acoes.
 - `state.js`: snapshot estruturado para debug e snapshot compacto para planner.
+- `ai/`: fundacao da camada de planner; valida decisao, adapta skills para ferramentas seguras e possui planner mockado sem API externa.
 - `utils.js`: helpers pequenos compartilhados.
 - `scripts/`: smoke tests e checagem sintatica.
 - `test/`: testes unitarios com `node:test`.
@@ -168,6 +169,18 @@ planner/comando futuro
 ```
 
 Se uma skill falha, procure primeiro em `data.plan`, `reason`, pre-condicoes e timeout antes de investigar Mineflayer.
+
+### Planner Mockado
+
+```text
+ai/planner.js
+  -> recebe userMessage, plannerState, tools e history
+  -> decide no maximo uma nextAction
+  -> ai/planner-schema.js valida formato, skill existente e args
+  -> ai/tool-adapter.js impede vazamento de funcoes/contexto interno
+```
+
+O planner atual nao executa skill e nao chama API externa. Ele existe para testar a tubulacao futura do prefixo `bot`.
 
 ### Coleta/Mining
 
@@ -293,6 +306,7 @@ perception summaries/tokens
 inventory summaries/snapshots
 survival status
 container memory
+ai.decideNextAction()
 ```
 
 `state.snapshot` continua util para debug completo. Para LLM/planner, prefira `state.planner_snapshot` ou `stateReporter.describePlannerSnapshot()`.
