@@ -33,6 +33,14 @@ mensagem "bot ..."
 
 O planner nao deve controlar Mineflayer diretamente.
 
+Estado atual da tubulacao experimental:
+
+- `commands.js` reconhece o prefixo oficial `bot`.
+- `ai/planner-executor.js` traduz o resultado do runner para uma mensagem curta no chat.
+- `ai/planner-runner.js` executa ciclos curtos e seguros: `getPlannerSnapshot()`, tools seguras, decisao, validacao, `plan()`, `execute()` e history compacta.
+- O runner usa `maxSteps = 1` por padrao e possui suporte interno a `maxSteps`, `dryRun` e `allowedRisks`.
+- O runner para em `ask_user`, `stop`, skill inexistente, falha de `plan`, falha de `execute`, risco de survival, `activeSkill` inesperada, risco nao permitido ou repeticao da mesma skill com os mesmos args.
+
 ## Skills Registradas E Prontidao Para IA
 
 ### Seguras Para Chamada Experimental
@@ -204,6 +212,8 @@ Ja resolvido:
 
 - `collection.collect` no registry usa `collectByTargetAction()`.
 - `getPlannerSnapshot()` foi adicionado em `state.js`.
+- Prefixo experimental `bot` foi conectado ao runner mockado sem API externa.
+- `ai/planner-runner.js` centraliza ciclos curtos, `dryRun`, riscos permitidos, bloqueio por survival/activeSkill/repeticao e history compacta.
 - `SkillRegistry` tem policy inicial opcional em `plannerMode`, bloqueando `inventory.drop`, `survival.set_enabled`, `containers.clear_memory`, movimento distante e coleta acima de 3 blocos sem `explicitUserIntent`.
 - `movement.go_to` e `movement.come_here` aguardam chegada real quando chamados como skill.
 

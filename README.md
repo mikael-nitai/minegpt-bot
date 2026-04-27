@@ -19,7 +19,7 @@ O bot ja possui:
 - interacao com containers: scan, memoria, busca, retirada, deposito e classificacao logistica semantica;
 - Survival Guard com diagnostico, pedidos de ajuda, comida automatica e reacoes curtas;
 - skill registry, ActionResult e snapshot de estado para futuro planner/IA.
-- fundacao de planner em `ai/`, ainda mockada/deterministica e sem API externa.
+- fundacao de planner em `ai/`, ainda mockada/deterministica, com runner de ciclos curtos e sem API externa.
 
 ## Requisitos
 
@@ -221,6 +221,8 @@ O prefixo experimental `bot` usa o planner mockado em `ai/`, sem API externa. Ex
 - `bot segue`
 - `bot pega madeira`
 - `bot faz crafting table`
+
+Por padrao, o runner executa no maximo uma acao por comando. A estrutura interna ja aceita ciclos curtos controlados para testes futuros, com bloqueios por risco, survival, skill ativa e repeticao.
 
 Esses comandos validam o fluxo chat -> planner -> SkillRegistry -> ActionResult. O planner ainda e deterministico e limitado.
 

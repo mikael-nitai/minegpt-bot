@@ -1,10 +1,11 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const { createSkillRegistry } = require('../skills')
-const { actionOk } = require('../action-result')
+const { actionOk, actionFail } = require('../action-result')
 const {
   decideNextAction,
   makePlannerDecision,
+  runPlannerCycles,
   validatePlannerDecision,
   skillsToPlannerTools,
   skillRegistryToPlannerTools
@@ -20,6 +21,64 @@ function plannerTools () {
     { id: 'collection.collect', description: 'coletar', inputSchema: { target: 'string', count: 'number optional' }, risk: 'medium', effects: ['world', 'inventory'], cost: { base: 5 }, plannerHints: '' },
     { id: 'crafting.craft', description: 'craftar', inputSchema: { target: 'string', count: 'number optional' }, risk: 'medium', effects: ['inventory'], cost: { base: 4 }, plannerHints: '' }
   ]
+}
+
+function plannerExecuteDecision (skill, args = {}, options = {}) {
+  return makePlannerDecision({
+    intent: 'execute_skill',
+    userGoal: options.userGoal || 'teste',
+    nextAction: { skill, args },
+    reasonSummary: options.reasonSummary || 'teste',
+    risk: options.risk || 'low',
+    confidence: options.confidence ?? 0.9,
+    stopAfterThis: options.stopAfterThis ?? true
+  })
+}
+
+function plannerAskDecision (askUser = 'Pode esclarecer?') {
+  return makePlannerDecision({
+    intent: 'ask_user',
+    userGoal: 'teste',
+    nextAction: null,
+    reasonSummary: 'precisa esclarecer',
+    askUser,
+    risk: 'low',
+    confidence: 0.5,
+    stopAfterThis: true
+  })
+}
+
+function createRunnerContext ({ planOk = true, executeOk = true, retryable = false, onRun = () => {} } = {}) {
+  const registry = createSkillRegistry({ defaultContext: { bot: {}, stateReporter: {} } })
+  registry.register({
+    id: 'demo.skill',
+    description: 'demo',
+    inputSchema: { step: 'number optional' },
+    risk: 'low',
+    run: (args) => {
+      onRun(args)
+      return executeOk
+        ? actionOk('demo.skill', 'demo ok')
+        : actionFail('demo.skill', 'demo fail', {}, Date.now(), { code: 'demo_failed', retryable })
+    }
+  })
+
+  if (!planOk) {
+    registry.plan = async (skill) => ({
+      ok: false,
+      skill,
+      code: 'precondition_failed',
+      reason: 'plan falhou',
+      missingRequirements: [],
+      suggestedNextActions: []
+    })
+  }
+
+  return {
+    skillRegistry: registry,
+    stateReporter: { getPlannerSnapshot: () => ({ online: true, activeSkill: null }) },
+    activeSkill: null
+  }
 }
 
 test('planner mockado escolhe uma unica skill para comandos conhecidos', async () => {
@@ -208,7 +267,7 @@ test('executor do planner bloqueia activeSkill exceto movement.stop', async () =
   })
 
   assert.equal(response.ok, false)
-  assert.match(response.chat, /já estou executando crafting/)
+  assert.match(response.chat, /ja estou executando crafting/)
 })
 
 test('executor do planner bloqueia risco medio ou alto em survival alto', async () => {
@@ -236,4 +295,103 @@ test('executor do planner bloqueia risco medio ou alto em survival alto', async 
   assert.equal(response.ok, false)
   assert.match(response.chat, /não vou fazer isso agora/)
   assert.match(response.chat, /zombie perto/)
+})
+
+test('runner executa uma acao com sucesso em um ciclo', async () => {
+  let runs = 0
+  const response = await runPlannerCycles({
+    userMessage: 'teste',
+    context: createRunnerContext({ onRun: () => { runs++ } }),
+    survivalGuard: { assess: () => ({ severity: 'low' }) },
+    decide: async () => plannerExecuteDecision('demo.skill')
+  })
+
+  assert.equal(response.ok, true)
+  assert.equal(response.status, 'completed')
+  assert.equal(response.steps, 1)
+  assert.equal(response.history[0].status, 'executed')
+  assert.equal(runs, 1)
+})
+
+test('runner para quando plan falha e nao executa a skill', async () => {
+  let runs = 0
+  const response = await runPlannerCycles({
+    userMessage: 'teste',
+    context: createRunnerContext({ planOk: false, onRun: () => { runs++ } }),
+    survivalGuard: { assess: () => ({ severity: 'low' }) },
+    decide: async () => plannerExecuteDecision('demo.skill')
+  })
+
+  assert.equal(response.ok, false)
+  assert.equal(response.status, 'plan_failed')
+  assert.equal(response.reason, 'plan falhou')
+  assert.equal(runs, 0)
+})
+
+test('runner para quando execute falha e preserva retryable', async () => {
+  const response = await runPlannerCycles({
+    userMessage: 'teste',
+    context: createRunnerContext({ executeOk: false, retryable: true }),
+    survivalGuard: { assess: () => ({ severity: 'low' }) },
+    decide: async () => plannerExecuteDecision('demo.skill')
+  })
+
+  assert.equal(response.ok, false)
+  assert.equal(response.status, 'execute_failed_retryable')
+  assert.equal(response.result.ok, false)
+  assert.equal(response.result.retryable, true)
+})
+
+test('runner retorna ask_user sem planejar ou executar', async () => {
+  let runs = 0
+  const response = await runPlannerCycles({
+    userMessage: 'teste ambiguo',
+    context: createRunnerContext({ onRun: () => { runs++ } }),
+    survivalGuard: { assess: () => ({ severity: 'low' }) },
+    decide: async () => plannerAskDecision('Qual item?')
+  })
+
+  assert.equal(response.ok, false)
+  assert.equal(response.status, 'ask_user')
+  assert.equal(response.reason, 'Qual item?')
+  assert.equal(runs, 0)
+})
+
+test('runner bloqueia repeticao da mesma skill com os mesmos args', async () => {
+  let runs = 0
+  const response = await runPlannerCycles({
+    userMessage: 'repete',
+    context: createRunnerContext({ onRun: () => { runs++ } }),
+    survivalGuard: { assess: () => ({ severity: 'low' }) },
+    maxSteps: 3,
+    decide: async () => plannerExecuteDecision('demo.skill', { step: 1 }, { stopAfterThis: false })
+  })
+
+  assert.equal(response.ok, false)
+  assert.equal(response.status, 'repetition_blocked')
+  assert.equal(response.steps, 2)
+  assert.equal(response.history[0].status, 'executed')
+  assert.equal(response.history[1].status, 'repetition_blocked')
+  assert.equal(runs, 1)
+})
+
+test('runner respeita maxSteps em ciclos curtos', async () => {
+  let decisions = 0
+  let runs = 0
+  const response = await runPlannerCycles({
+    userMessage: 'ciclo curto',
+    context: createRunnerContext({ onRun: () => { runs++ } }),
+    survivalGuard: { assess: () => ({ severity: 'low' }) },
+    maxSteps: 2,
+    decide: async () => {
+      decisions++
+      return plannerExecuteDecision('demo.skill', { step: decisions }, { stopAfterThis: false })
+    }
+  })
+
+  assert.equal(response.ok, true)
+  assert.equal(response.status, 'max_steps_reached')
+  assert.equal(response.steps, 2)
+  assert.equal(decisions, 2)
+  assert.equal(runs, 2)
 })

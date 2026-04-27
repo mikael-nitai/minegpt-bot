@@ -48,7 +48,7 @@ index.js
 - `skills.js`: contrato planejavel das skills, `plan()`, validacao, pre/post-condicoes e timeout.
 - `action-result.js`: formato padrao de resultado de acoes.
 - `state.js`: snapshot estruturado para debug e snapshot compacto para planner.
-- `ai/`: fundacao da camada de planner; valida decisao, adapta skills para ferramentas seguras e possui planner mockado sem API externa.
+- `ai/`: fundacao da camada de planner; valida decisao, adapta skills para ferramentas seguras, executa ciclos curtos pelo runner e possui planner mockado sem API externa.
 - `utils.js`: helpers pequenos compartilhados.
 - `scripts/`: smoke tests e checagem sintatica.
 - `test/`: testes unitarios com `node:test`.
@@ -174,18 +174,19 @@ Se uma skill falha, procure primeiro em `data.plan`, `reason`, pre-condicoes e t
 
 ```text
 commands.js detecta prefixo "bot"
-  -> ai/planner-executor.js monta state/tools
-  -> ai/planner.js
+  -> ai/planner-executor.js traduz execucao para resposta curta no chat
+  -> ai/planner-runner.js controla maxSteps, dryRun, allowedRisks, history e bloqueios
+  -> stateReporter.getPlannerSnapshot()
+  -> ai/tool-adapter.js converte SkillRegistry.list() em tools seguras
+  -> ai/planner.js decide uma proxima acao
   -> recebe userMessage, plannerState, tools e history
-  -> decide no maximo uma nextAction
   -> ai/planner-schema.js valida formato, skill existente e args
-  -> ai/tool-adapter.js impede vazamento de funcoes/contexto interno
   -> SkillRegistry.plan()
   -> SkillRegistry.execute()
   -> resposta curta no chat
 ```
 
-O planner atual nao chama API externa. Ele nao executa diretamente Mineflayer; execucao passa pelo `SkillRegistry`.
+O planner atual nao chama API externa. Ele nao executa diretamente Mineflayer; execucao passa pelo `SkillRegistry`. O runner limita uma acao por comando por padrao, aceita ciclos curtos via `maxSteps`, registra history compacta por comando e para em `ask_user`, `stop`, falha de plan/execute, risco de survival, activeSkill inesperada ou repeticao da mesma acao.
 
 ### Coleta/Mining
 
