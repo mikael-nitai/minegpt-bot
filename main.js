@@ -92,13 +92,17 @@ function setupSkillRegistry ({
   survivalGuard,
   stateReporter
 }) {
-  const registry = createSkillRegistry()
+  const registry = createSkillRegistry({ defaultContext: context })
 
   registry.register({
     id: 'movement.follow_owner',
     description: 'Segue o jogador dono.',
     risk: 'low',
     timeoutMs: 1000,
+    requires: ['botOnline', 'navigationReady', 'notReconnecting'],
+    effects: ['position', 'movement'],
+    cost: { base: 2, movement: true },
+    plannerHints: 'Use quando o objetivo for acompanhar o dono continuamente.',
     run: () => {
       context.navigationController.followPlayer(config.owner)
       return actionOk('movement.follow_owner', 'seguindo dono')
@@ -110,6 +114,10 @@ function setupSkillRegistry ({
     description: 'Vai ate o jogador dono.',
     risk: 'low',
     timeoutMs: 1000,
+    requires: ['botOnline', 'navigationReady', 'notReconnecting'],
+    effects: ['position', 'movement'],
+    cost: { base: 2, movement: true },
+    plannerHints: 'Use para aproximar o bot do dono antes de interagir ou receber itens.',
     run: () => {
       context.navigationController.comeHere(config.owner)
       return actionOk('movement.come_here', 'indo ate o dono')
@@ -122,6 +130,10 @@ function setupSkillRegistry ({
     risk: 'medium',
     timeoutMs: 30000,
     inputSchema: { x: 'number', y: 'number', z: 'number' },
+    requires: ['botOnline', 'navigationReady', 'notReconnecting'],
+    effects: ['position', 'movement'],
+    cost: { base: 4, movement: true },
+    plannerHints: 'Use apenas quando houver coordenadas confiaveis e rota razoavelmente segura.',
     run: ({ x, y, z }) => {
       if ([x, y, z].some(value => typeof value !== 'number')) return actionFail('movement.go_to', 'coordenadas invalidas')
       context.navigationController.goToCoords({ x, y, z })
@@ -134,6 +146,10 @@ function setupSkillRegistry ({
     description: 'Para movimento e cancela skill atual.',
     risk: 'low',
     timeoutMs: 1000,
+    requires: ['botOnline', 'navigationReady'],
+    effects: ['movement', 'activeSkill'],
+    cost: { base: 1 },
+    plannerHints: 'Use como acao segura para interromper movimento ou recuperar controle.',
     run: () => {
       const cancelled = context.cancelActiveSkill()
       context.navigationController.stop('skill registry stop')
@@ -149,6 +165,10 @@ function setupSkillRegistry ({
     risk: 'low',
     timeoutMs: 5000,
     inputSchema: { item: 'string' },
+    requires: ['botOnline', 'notReconnecting'],
+    effects: ['heldItem'],
+    cost: { base: 1 },
+    plannerHints: 'Use antes de minerar, combater, comer ou colocar blocos quando a mao importa.',
     run: async ({ item }) => {
       if (!item) return actionFail('inventory.equip', 'item ausente')
       await commandSystem.equipItemByName(item)
@@ -162,6 +182,10 @@ function setupSkillRegistry ({
     risk: 'medium',
     timeoutMs: 5000,
     inputSchema: { item: 'string', amount: 'number optional' },
+    requires: ['botOnline', 'notReconnecting'],
+    effects: ['inventory', 'worldDrops'],
+    cost: { base: 2 },
+    plannerHints: 'Use com cuidado porque remove itens do inventario e cria drop no mundo.',
     run: async ({ item, amount = null }) => {
       if (!item) return actionFail('inventory.drop', 'item ausente')
       await commandSystem.dropItemByName(item, amount == null ? null : String(amount))
@@ -175,6 +199,10 @@ function setupSkillRegistry ({
     risk: 'low',
     timeoutMs: 5000,
     inputSchema: { slot: 'number 1-9', item: 'string' },
+    requires: ['botOnline', 'notReconnecting'],
+    effects: ['inventory', 'hotbar'],
+    cost: { base: 1 },
+    plannerHints: 'Use para preparar ferramentas, comida, tochas ou blocos antes de uma sequencia.',
     run: async ({ slot, item }) => {
       if (!slot || !item) return actionFail('inventory.hotbar', 'slot ou item ausente')
       await commandSystem.moveItemToHotbar(String(slot), item)
@@ -188,6 +216,10 @@ function setupSkillRegistry ({
     risk: 'medium',
     timeoutMs: 60000,
     inputSchema: { target: 'string', count: 'number optional max 10' },
+    requires: ['botOnline', 'navigationReady', 'notReconnecting'],
+    effects: ['world', 'inventory', 'position', 'drops'],
+    cost: { base: 5, movement: true, worldChange: true },
+    plannerHints: 'Use para transformar percepcao em recurso; prefere alvos visiveis e seguros.',
     run: async ({ target, count = 1 }) => {
       if (!target) return actionFail('collection.collect', 'alvo ausente')
       if (count > 1) {
@@ -205,6 +237,10 @@ function setupSkillRegistry ({
     risk: 'low',
     timeoutMs: 8000,
     inputSchema: { target: 'string optional' },
+    requires: ['botOnline', 'navigationReady', 'notReconnecting'],
+    effects: ['inventory', 'position', 'drops'],
+    cost: { base: 3, movement: true },
+    plannerHints: 'Use depois de minerar ou quando houver itens dropados relevantes por perto.',
     run: async ({ target = null }) => {
       const itemTarget = target ? inventory.normalizeItemTarget(target, 'dropped') : null
       const gains = await collection.collectDropsAround(context.bot.entity.position.clone(), {
@@ -224,6 +260,10 @@ function setupSkillRegistry ({
     risk: 'medium',
     timeoutMs: 20000,
     inputSchema: { target: 'string', count: 'number optional' },
+    requires: ['botOnline', 'notReconnecting'],
+    effects: ['inventory'],
+    cost: { base: 4, mayNeedCraftingTable: true },
+    plannerHints: 'Use quando o item final e conhecido e os materiais provavelmente existem.',
     run: async ({ target, count = 1 }) => {
       if (!target) return actionFail('crafting.craft', 'alvo ausente')
       return craftingHelpers.craftByQuery(target, count)
@@ -236,6 +276,10 @@ function setupSkillRegistry ({
     risk: 'low',
     timeoutMs: 1000,
     inputSchema: { target: 'string' },
+    requires: ['botOnline'],
+    effects: ['chat'],
+    cost: { base: 1 },
+    plannerHints: 'Use antes de craftar quando for necessario explicar faltas ou dependencias.',
     run: ({ target }) => {
       if (!target) return actionFail('crafting.recipe', 'alvo ausente')
       return actionOk('crafting.recipe', craftingHelpers.describeRecipeByQuery(target))
@@ -248,6 +292,10 @@ function setupSkillRegistry ({
     risk: 'medium',
     timeoutMs: 18000,
     inputSchema: { target: 'string', mode: 'front|below|near_owner|coords', coords: 'object optional' },
+    requires: ['botOnline', 'navigationReady', 'notReconnecting'],
+    effects: ['world', 'inventory', 'position'],
+    cost: { base: 4, movement: true, worldChange: true },
+    plannerHints: 'Use para colocacao simples; nao use para estruturas grandes ainda.',
     run: async ({ target = 'bloco', mode = 'front', coords = null }) => {
       return placementHelpers.placeByRequest({ target, mode, coords, raw: target })
     }
@@ -258,6 +306,10 @@ function setupSkillRegistry ({
     description: 'Procura, abre e memoriza containers proximos.',
     risk: 'medium',
     timeoutMs: 60000,
+    requires: ['botOnline', 'navigationReady', 'notReconnecting'],
+    effects: ['position', 'containerMemory'],
+    cost: { base: 5, movement: true },
+    plannerHints: 'Use para atualizar memoria antes de buscar ou guardar itens em baus.',
     run: () => containerHelpers.scanAndInspectContainers()
   })
 
@@ -267,6 +319,10 @@ function setupSkillRegistry ({
     risk: 'low',
     timeoutMs: 60000,
     inputSchema: { target: 'string' },
+    requires: ['botOnline', 'navigationReady', 'notReconnecting'],
+    effects: ['position', 'containerMemory'],
+    cost: { base: 3, movement: true },
+    plannerHints: 'Use para localizar item sem necessariamente retirar do container.',
     run: ({ target }) => {
       if (!target) return actionFail('containers.search', 'alvo ausente')
       return containerHelpers.searchItemByQuery(target)
@@ -279,6 +335,10 @@ function setupSkillRegistry ({
     risk: 'medium',
     timeoutMs: 60000,
     inputSchema: { target: 'string', count: 'number optional' },
+    requires: ['botOnline', 'navigationReady', 'notReconnecting'],
+    effects: ['inventory', 'position', 'containerMemory'],
+    cost: { base: 5, movement: true },
+    plannerHints: 'Use quando o bot precisa de item que pode estar em container conhecido/proximo.',
     run: ({ target, count = 1 }) => {
       if (!target) return actionFail('containers.withdraw', 'alvo ausente')
       return containerHelpers.withdrawItemByQuery(target, count)
@@ -291,6 +351,10 @@ function setupSkillRegistry ({
     risk: 'medium',
     timeoutMs: 60000,
     inputSchema: { mode: 'target|all|resources|blocks|drops', target: 'string optional', count: 'number optional' },
+    requires: ['botOnline', 'navigationReady', 'notReconnecting'],
+    effects: ['inventory', 'position', 'containerMemory'],
+    cost: { base: 5, movement: true },
+    plannerHints: 'Use para organizar inventario preservando itens protegidos pela skill de containers.',
     run: ({ mode = 'target', target = null, count = null }) => containerHelpers.depositByRequest({ mode, target, count })
   })
 
@@ -299,6 +363,9 @@ function setupSkillRegistry ({
     description: 'Esquece memoria de containers.',
     risk: 'low',
     timeoutMs: 1000,
+    effects: ['containerMemory'],
+    cost: { base: 1 },
+    plannerHints: 'Use quando a memoria de containers estiver velha ou inconsistente.',
     run: () => {
       const count = containerHelpers.clearMemory()
       return actionOk('containers.clear_memory', `esqueci ${count} container(s)`)
@@ -310,6 +377,10 @@ function setupSkillRegistry ({
     description: 'Consulta estado de sobrevivencia.',
     risk: 'low',
     timeoutMs: 1000,
+    requires: ['botOnline'],
+    effects: ['chat'],
+    cost: { base: 1 },
+    plannerHints: 'Use para decidir se o bot esta seguro antes de iniciar acoes maiores.',
     run: () => actionOk('survival.status', survivalGuard.describeStatus(), survivalGuard.assess())
   })
 
@@ -319,6 +390,9 @@ function setupSkillRegistry ({
     risk: 'low',
     timeoutMs: 1000,
     inputSchema: { enabled: 'boolean' },
+    effects: ['survivalGuard'],
+    cost: { base: 1 },
+    plannerHints: 'Use raramente; o normal e manter survival guard ligado em survival.',
     run: ({ enabled }) => {
       survivalGuard.setEnabled(Boolean(enabled))
       return actionOk('survival.set_enabled', `survival ${enabled ? 'on' : 'off'}`, { enabled: Boolean(enabled) })
@@ -330,6 +404,10 @@ function setupSkillRegistry ({
     description: 'Retorna resumo estruturado do estado atual.',
     risk: 'low',
     timeoutMs: 1000,
+    requires: ['botOnline', 'stateReporter'],
+    effects: [],
+    cost: { base: 1 },
+    plannerHints: 'Use como principal leitura estruturada antes de planejar.',
     run: () => actionOk('state.snapshot', 'estado atual', stateReporter.getStateSnapshot())
   })
 

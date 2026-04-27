@@ -4,7 +4,7 @@ const minecraftData = require('minecraft-data')
 const { createMinecraftCatalog } = require('../catalog')
 const { createInventoryHelpers } = require('../inventory')
 const { actionOk, actionFail } = require('../action-result')
-const { createSkillRegistry } = require('../skills')
+const { createSkillRegistry, validateArgs } = require('../skills')
 
 function createMockInventory () {
   const mcData = minecraftData('1.20.4')
@@ -85,6 +85,7 @@ test('skill registry executa skills e padroniza skill ausente', async () => {
   registry.register({
     id: 'demo.echo',
     description: 'eco',
+    inputSchema: { text: 'string' },
     run: ({ text }) => actionOk('demo.echo', text, { text })
   })
 
@@ -97,4 +98,67 @@ test('skill registry executa skills e padroniza skill ausente', async () => {
 
   const missing = await registry.execute('missing.skill')
   assert.equal(missing.ok, false)
+})
+
+test('skill registry valida argumentos e pre-condicoes antes de executar', async () => {
+  let executed = false
+  const registry = createSkillRegistry()
+  registry.register({
+    id: 'demo.requires_bot',
+    description: 'acao com contrato',
+    inputSchema: { text: 'string', count: 'number optional max 3' },
+    requires: ['botOnline'],
+    effects: ['chat'],
+    cost: { base: 2 },
+    run: ({ text, count = 1 }) => {
+      executed = true
+      return actionOk('demo.requires_bot', text, { text, count })
+    }
+  })
+
+  const invalid = await registry.execute('demo.requires_bot', { count: 4 }, { bot: {} })
+  assert.equal(invalid.ok, false)
+  assert.match(invalid.reason, /text ausente/)
+  assert.match(invalid.reason, /count deve ser <= 3/)
+  assert.equal(executed, false)
+
+  const noBotPlan = await registry.plan('demo.requires_bot', { text: 'ok' })
+  assert.equal(noBotPlan.ok, false)
+  assert.match(noBotPlan.reason, /bot offline/)
+
+  const okPlan = await registry.plan('demo.requires_bot', { text: 'ok', count: 2 }, { bot: {} })
+  assert.equal(okPlan.ok, true)
+  assert.deepEqual(okPlan.effects, ['chat'])
+  assert.equal(okPlan.cost.base, 2)
+
+  const ok = await registry.execute('demo.requires_bot', { text: 'ok', count: 2 }, { bot: {} })
+  assert.equal(ok.ok, true)
+  assert.equal(ok.data.text, 'ok')
+  assert.equal(ok.data.plan.skill, 'demo.requires_bot')
+  assert.equal(executed, true)
+})
+
+test('skill registry aplica timeout e validacao standalone', async () => {
+  const validation = validateArgs({
+    slot: 'number 1-9',
+    mode: 'front|below'
+  }, {
+    slot: 10,
+    mode: 'side'
+  })
+
+  assert.equal(validation.ok, false)
+  assert.match(validation.errors.join('; '), /slot deve ser <= 9/)
+  assert.match(validation.errors.join('; '), /mode deve ser um de/)
+
+  const registry = createSkillRegistry()
+  registry.register({
+    id: 'demo.timeout',
+    timeoutMs: 5,
+    run: () => new Promise(resolve => setTimeout(() => resolve(actionOk('demo.timeout')), 50))
+  })
+
+  const result = await registry.execute('demo.timeout')
+  assert.equal(result.ok, false)
+  assert.match(result.reason, /timeout/)
 })

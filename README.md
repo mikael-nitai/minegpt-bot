@@ -228,7 +228,7 @@ Esses comandos expõem estado e skills registradas para a futura camada de lingu
 - `crafting.js`: crafting direto seguro e cadeia curta para itens basicos.
 - `placement.js`: colocacao segura de blocos simples.
 - `containers.js`: memoria e interacao segura com containers.
-- `skills.js`: skill registry para futura IA/planner.
+- `skills.js`: skill registry para futura IA/planner, com contratos de argumentos, requisitos, efeitos, risco, custo e `plan()`.
 - `action-result.js`: resultado padronizado de acoes.
 - `state.js`: snapshot estruturado do estado do bot.
 - `scripts/`: smoke tests e checagem sintatica.

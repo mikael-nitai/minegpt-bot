@@ -15,13 +15,19 @@ const registry = createSkillRegistry()
 registry.register({
   id: 'demo.echo',
   description: 'eco',
+  inputSchema: { text: 'string' },
+  effects: ['chat'],
   run: ({ text }) => actionOk('demo.echo', text, { text })
 })
 
 assert.strictEqual(registry.get('demo.echo').id, 'demo.echo')
 assert(registry.describe().includes('demo.echo'))
 
-registry.execute('demo.echo', { text: 'ok' }).then((result) => {
+registry.plan('demo.echo', { text: 'ok' }).then((plan) => {
+  assert.strictEqual(plan.ok, true)
+  assert.deepStrictEqual(plan.effects, ['chat'])
+  return registry.execute('demo.echo', { text: 'ok' })
+}).then((result) => {
   assert.strictEqual(result.ok, true)
   assert.strictEqual(result.data.text, 'ok')
   return registry.execute('missing.skill')
