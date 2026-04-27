@@ -209,9 +209,20 @@ O Survival Guard monitora vida, fome, mobs, lava, fogo, magma, quedas e afogamen
 
 - `estado`
 - `planner estado`
+- `planner compacto`
 - `skills`
+- `bot COMANDO`
 
-Esses comandos expõem estado e skills registradas para a futura camada de linguagem natural.
+O prefixo experimental `bot` usa o planner mockado em `ai/`, sem API externa. Exemplos:
+
+- `bot estado`
+- `bot vem aqui`
+- `bot para`
+- `bot segue`
+- `bot pega madeira`
+- `bot faz crafting table`
+
+Esses comandos validam o fluxo chat -> planner -> SkillRegistry -> ActionResult. O planner ainda e deterministico e limitado.
 
 ## Arquitetura
 

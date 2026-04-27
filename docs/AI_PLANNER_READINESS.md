@@ -264,6 +264,8 @@ Estado: fase 1 aplicada em nivel inicial. Ainda falta evoluir cancelamento real 
 - Usar `SkillRegistry.plan()` antes de `execute()`.
 - Retornar no chat o resultado estruturado resumido.
 
+Estado: fase 2 inicial aplicada. O prefixo `bot` passa por `ai/planner-executor.js`, usa planner mockado, valida `plan()` antes de `execute()` e limita a uma acao por comando.
+
 ### Fase 3 - API De Linguagem Natural
 
 - Conectar API somente depois da Fase 1 e 2.

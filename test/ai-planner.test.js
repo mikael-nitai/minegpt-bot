@@ -9,6 +9,7 @@ const {
   skillsToPlannerTools,
   skillRegistryToPlannerTools
 } = require('../ai')
+const { parseBotCommand, runPlannerCommand, survivalBlocksPlan } = require('../ai/planner-executor')
 
 function plannerTools () {
   return [
@@ -138,4 +139,101 @@ test('tool adapter remove funcoes e contexto interno das skills', () => {
   assert.equal(fromList[0].id, 'x')
   assert.equal('run' in fromList[0], false)
   assert.equal('context' in fromList[0], false)
+})
+
+test('parser do prefixo bot aceita somente comando oficial', () => {
+  assert.equal(parseBotCommand('bot vem aqui'), 'vem aqui')
+  assert.equal(parseBotCommand('BOT estado'), 'estado')
+  assert.equal(parseBotCommand('bot'), '')
+  assert.equal(parseBotCommand('ia vem aqui'), null)
+  assert.equal(parseBotCommand('mente vem aqui'), null)
+})
+
+test('executor do planner chama plan antes de execute e responde resultado curto', async () => {
+  const calls = []
+  const registry = createSkillRegistry({ defaultContext: { bot: {}, stateReporter: {} } })
+  registry.register({
+    id: 'movement.stop',
+    description: 'parar',
+    requires: ['botOnline'],
+    run: () => {
+      calls.push('run')
+      return actionOk('movement.stop', 'movimento parado')
+    }
+  })
+  const originalPlan = registry.plan
+  const originalExecute = registry.execute
+  registry.plan = async (skill, args, context) => {
+    calls.push('plan')
+    return originalPlan(skill, args, context)
+  }
+  registry.execute = async (skill, args, context) => {
+    calls.push('execute')
+    return originalExecute(skill, args, context)
+  }
+
+  const response = await runPlannerCommand({
+    userMessage: 'parar',
+    context: {
+      skillRegistry: registry,
+      stateReporter: { getPlannerSnapshot: () => ({ online: true }) },
+      activeSkill: { name: 'coletar' }
+    },
+    survivalGuard: { assess: () => ({ severity: 'low' }) }
+  })
+
+  assert.equal(response.ok, true)
+  assert.match(response.chat, /Bot: feito/)
+  assert.deepEqual(calls, ['plan', 'execute', 'run'])
+})
+
+test('executor do planner bloqueia activeSkill exceto movement.stop', async () => {
+  const registry = createSkillRegistry({ defaultContext: { bot: {}, stateReporter: {} } })
+  registry.register({
+    id: 'collection.collect',
+    description: 'coletar',
+    inputSchema: { target: 'string', count: 'number optional' },
+    risk: 'medium',
+    run: () => actionOk('collection.collect', 'coletado')
+  })
+
+  const response = await runPlannerCommand({
+    userMessage: 'pega madeira',
+    context: {
+      skillRegistry: registry,
+      stateReporter: { getPlannerSnapshot: () => ({ online: true }) },
+      activeSkill: { name: 'crafting' }
+    },
+    survivalGuard: { assess: () => ({ severity: 'low' }) }
+  })
+
+  assert.equal(response.ok, false)
+  assert.match(response.chat, /já estou executando crafting/)
+})
+
+test('executor do planner bloqueia risco medio ou alto em survival alto', async () => {
+  const registry = createSkillRegistry({ defaultContext: { bot: {}, stateReporter: {} } })
+  registry.register({
+    id: 'collection.collect',
+    description: 'coletar',
+    inputSchema: { target: 'string', count: 'number optional' },
+    risk: 'medium',
+    run: () => actionOk('collection.collect', 'coletado')
+  })
+
+  assert.equal(survivalBlocksPlan({ severity: 'high', top: 'zombie perto' }, { id: 'collection.collect', risk: 'medium' }), 'survival high: zombie perto')
+
+  const response = await runPlannerCommand({
+    userMessage: 'pega madeira',
+    context: {
+      skillRegistry: registry,
+      stateReporter: { getPlannerSnapshot: () => ({ online: true }) },
+      activeSkill: null
+    },
+    survivalGuard: { assess: () => ({ severity: 'high', top: 'zombie perto' }) }
+  })
+
+  assert.equal(response.ok, false)
+  assert.match(response.chat, /não vou fazer isso agora/)
+  assert.match(response.chat, /zombie perto/)
 })

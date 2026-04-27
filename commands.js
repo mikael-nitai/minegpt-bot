@@ -6,6 +6,7 @@ const {
   parseContainerDepositCommand
 } = require('./containers')
 const { actionFail } = require('./action-result')
+const { parseBotCommand, runPlannerCommand } = require('./ai')
 
 function createCommandSystem ({
   context,
@@ -140,6 +141,16 @@ function createCommandSystem ({
 
   async function handleCommand (username, message) {
     const text = message.trim().toLowerCase()
+    const botCommand = parseBotCommand(message)
+    if (botCommand != null) {
+      const response = await runPlannerCommand({
+        userMessage: botCommand,
+        context,
+        survivalGuard
+      })
+      bot().chat(response.chat)
+      return
+    }
 
     if (text === 'seguir') {
       context.navigationController.followPlayer(username)

@@ -173,14 +173,19 @@ Se uma skill falha, procure primeiro em `data.plan`, `reason`, pre-condicoes e t
 ### Planner Mockado
 
 ```text
-ai/planner.js
+commands.js detecta prefixo "bot"
+  -> ai/planner-executor.js monta state/tools
+  -> ai/planner.js
   -> recebe userMessage, plannerState, tools e history
   -> decide no maximo uma nextAction
   -> ai/planner-schema.js valida formato, skill existente e args
   -> ai/tool-adapter.js impede vazamento de funcoes/contexto interno
+  -> SkillRegistry.plan()
+  -> SkillRegistry.execute()
+  -> resposta curta no chat
 ```
 
-O planner atual nao executa skill e nao chama API externa. Ele existe para testar a tubulacao futura do prefixo `bot`.
+O planner atual nao chama API externa. Ele nao executa diretamente Mineflayer; execucao passa pelo `SkillRegistry`.
 
 ### Coleta/Mining
 
