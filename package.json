@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "check": "node --check index.js && node --check catalog.js && node --check inventory.js && node --check perception.js && node --check survival.js && node --check crafting.js && node --check placement.js && node --check containers.js && node --check action-result.js && node --check skills.js && node --check state.js && node --check scripts/check-catalog.js && node --check scripts/check-inventory.js && node --check scripts/check-skills.js && node --check scripts/check-crafting.js && node --check scripts/check-placement.js && node --check scripts/check-containers.js",
+    "check": "node --check index.js && node --check main.js && node --check bot-runtime.js && node --check commands.js && node --check navigation.js && node --check collection.js && node --check utils.js && node --check catalog.js && node --check inventory.js && node --check perception.js && node --check survival.js && node --check crafting.js && node --check placement.js && node --check containers.js && node --check action-result.js && node --check skills.js && node --check state.js && node --check scripts/check-catalog.js && node --check scripts/check-inventory.js && node --check scripts/check-skills.js && node --check scripts/check-crafting.js && node --check scripts/check-placement.js && node --check scripts/check-containers.js",
     "test:catalog": "node scripts/check-catalog.js",
     "test:inventory": "node scripts/check-inventory.js",
     "test:skills": "node scripts/check-skills.js",

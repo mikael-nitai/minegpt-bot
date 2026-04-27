@@ -214,7 +214,13 @@ Esses comandos expõem estado e skills registradas para a futura camada de lingu
 
 ## Arquitetura
 
-- `index.js`: orquestracao do bot, comandos de chat e conexao Mineflayer.
+- `index.js`: entrypoint minimo que inicia `main.js`.
+- `main.js`: montagem das dependencias, skills e estado compartilhado.
+- `bot-runtime.js`: criacao do bot, eventos, conexao e reconexao.
+- `commands.js`: parser e execucao dos comandos de chat.
+- `navigation.js`: controlador de navegacao, modos e recuperacao de travamento.
+- `collection.js`: coleta/mineracao de blocos e drops.
+- `utils.js`: helpers compartilhados pequenos.
 - `catalog.js`: catalogo/resolucao de blocos e itens usando `minecraft-data`.
 - `inventory.js`: helpers de inventario, hotbar, snapshots e diffs.
 - `perception.js`: percepcao, tokens, attention scoring e agrupamento de blocos.
