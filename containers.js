@@ -56,6 +56,27 @@ const RESOURCE_NAMES = new Set([
   'clay_ball'
 ])
 
+const VALUABLE_NAMES = new Set([
+  'diamond',
+  'emerald',
+  'netherite_scrap',
+  'netherite_ingot',
+  'ancient_debris',
+  'gold_ingot',
+  'raw_gold',
+  'gold_block',
+  'diamond_block',
+  'emerald_block'
+])
+
+const TRASH_NAMES = new Set([
+  'poisonous_potato',
+  'dead_bush',
+  'rotten_flesh'
+])
+
+const WOOD_SPECIES = ['oak', 'spruce', 'birch', 'jungle', 'acacia', 'dark_oak', 'mangrove', 'cherry', 'bamboo', 'crimson', 'warped']
+
 function isContainerBlockName (name) {
   if (!name) return false
   return BASE_CONTAINER_BLOCKS.has(name) ||
@@ -112,6 +133,132 @@ function parseContainerDepositCommand (text) {
 
 function isContainerCommandText (text) {
   return /\b(?:ba[uú]s?|containers?)\b/i.test(text)
+}
+
+function specificWoodRole (name) {
+  for (const species of WOOD_SPECIES) {
+    if (species === 'bamboo' && (name.startsWith('bamboo_') || name === 'bamboo')) return species
+    if (name.startsWith(`${species}_`)) return species
+  }
+  return null
+}
+
+function specificStoneRole (name) {
+  if (name === 'stone' || name.startsWith('stone_')) return 'stone'
+  if (name === 'cobblestone' || name.startsWith('cobblestone_')) return 'cobblestone'
+  if (name === 'andesite' || name.startsWith('andesite_')) return 'andesite'
+  if (name === 'diorite' || name.startsWith('diorite_')) return 'diorite'
+  if (name === 'granite' || name.startsWith('granite_')) return 'granite'
+  if (name === 'deepslate' || name === 'cobbled_deepslate' || name.includes('deepslate')) return 'deepslate'
+  return null
+}
+
+function classifyItemStorageRole (name, catalog) {
+  const blockItem = Boolean(catalog?.data?.blocksByName?.[name])
+  const wood = specificWoodRole(name)
+  if (wood || catalog?.catalogItemHasCategory?.(name, 'wood') || name.endsWith('_log') || name.endsWith('_planks')) {
+    return { primaryRole: blockItem ? 'blocks' : 'resources', secondaryRole: 'wood', specificRole: wood || 'unknown' }
+  }
+
+  const stone = specificStoneRole(name)
+  if (stone || catalog?.catalogItemHasCategory?.(name, 'stone')) {
+    return { primaryRole: 'blocks', secondaryRole: 'stone', specificRole: stone || 'unknown' }
+  }
+
+  if (VALUABLE_NAMES.has(name)) return { primaryRole: 'valuables', secondaryRole: 'valuable', specificRole: name }
+  if (catalog?.foodNames?.has(name)) return { primaryRole: 'food', secondaryRole: 'food', specificRole: 'unknown' }
+  if (name.endsWith('_pickaxe') || name.endsWith('_axe') || name.endsWith('_shovel') || name.endsWith('_hoe')) {
+    return { primaryRole: 'tools', secondaryRole: 'tool', specificRole: name.replace(/^(wooden|stone|iron|golden|diamond|netherite)_/, '') }
+  }
+  if (name.endsWith('_sword') || name === 'shield' || name === 'bow' || name === 'crossbow' || name === 'trident' || name === 'mace') {
+    return { primaryRole: 'combat', secondaryRole: 'weapon', specificRole: 'unknown' }
+  }
+  if (MOB_DROP_NAMES.has(name)) return { primaryRole: 'mob_drops', secondaryRole: 'drop', specificRole: name }
+  if (RESOURCE_NAMES.has(name) || name.endsWith('_ore')) return { primaryRole: 'resources', secondaryRole: name.endsWith('_ore') ? 'ore' : 'resource', specificRole: 'unknown' }
+  if (TRASH_NAMES.has(name)) return { primaryRole: 'trash', secondaryRole: 'trash', specificRole: name }
+  if (blockItem) return { primaryRole: 'blocks', secondaryRole: 'building', specificRole: 'unknown' }
+  return { primaryRole: 'unknown', secondaryRole: 'unknown', specificRole: 'unknown' }
+}
+
+function topRole (scores) {
+  const entries = [...scores.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+  return entries[0] || ['unknown', 0]
+}
+
+function classifyContainerItems (items = [], catalog) {
+  const total = items.reduce((sum, item) => sum + Math.max(0, item.count || 0), 0)
+  if (total <= 0) {
+    return {
+      primaryRole: 'unknown',
+      secondaryRole: 'unknown',
+      specificRole: 'unknown',
+      confidence: 0,
+      mixed: false,
+      evidence: []
+    }
+  }
+
+  const primaryScores = new Map()
+  const secondaryScores = new Map()
+  const specificScores = new Map()
+  const evidenceByPrimary = new Map()
+
+  for (const item of items) {
+    if (!item?.name) continue
+    const count = Math.max(0, item.count || 0)
+    const role = classifyItemStorageRole(item.name, catalog)
+    primaryScores.set(role.primaryRole, (primaryScores.get(role.primaryRole) || 0) + count)
+    secondaryScores.set(`${role.primaryRole}:${role.secondaryRole}`, (secondaryScores.get(`${role.primaryRole}:${role.secondaryRole}`) || 0) + count)
+    specificScores.set(`${role.primaryRole}:${role.secondaryRole}:${role.specificRole}`, (specificScores.get(`${role.primaryRole}:${role.secondaryRole}:${role.specificRole}`) || 0) + count)
+
+    const evidence = evidenceByPrimary.get(role.primaryRole) || []
+    evidence.push({ name: item.name, count, role })
+    evidenceByPrimary.set(role.primaryRole, evidence)
+  }
+
+  const [primaryRole, primaryCount] = topRole(primaryScores)
+  const primaryConfidence = primaryCount / total
+  if (primaryConfidence < 0.7) {
+    return {
+      primaryRole: 'mixed',
+      secondaryRole: 'mixed',
+      specificRole: 'mixed',
+      confidence: Number(primaryConfidence.toFixed(2)),
+      mixed: true,
+      evidence: [...items].sort((a, b) => (b.count || 0) - (a.count || 0)).slice(0, 5).map(item => `${item.count}x ${item.name}`)
+    }
+  }
+
+  const secondaryCandidates = [...secondaryScores.entries()]
+    .filter(([key]) => key.startsWith(`${primaryRole}:`))
+  const [secondaryKey, secondaryCount] = topRole(new Map(secondaryCandidates))
+  const secondaryRole = secondaryKey.split(':')[1] || 'unknown'
+  const secondaryConfidence = secondaryCount / primaryCount
+
+  const safeSecondaryRole = secondaryConfidence >= 0.6 ? secondaryRole : 'mixed'
+  let safeSpecificRole = 'unknown'
+  let specificConfidence = 0
+
+  if (safeSecondaryRole !== 'mixed') {
+    const specificCandidates = [...specificScores.entries()]
+      .filter(([key]) => key.startsWith(`${primaryRole}:${safeSecondaryRole}:`))
+    const [specificKey, specificCount] = topRole(new Map(specificCandidates))
+    const specificRole = specificKey.split(':')[2] || 'unknown'
+    specificConfidence = specificCount / secondaryCount
+    safeSpecificRole = specificConfidence >= 0.7 ? specificRole : 'mixed'
+  }
+
+  return {
+    primaryRole,
+    secondaryRole: safeSecondaryRole,
+    specificRole: safeSpecificRole,
+    confidence: Number(Math.min(primaryConfidence, secondaryConfidence || primaryConfidence, specificConfidence || 1).toFixed(2)),
+    mixed: safeSecondaryRole === 'mixed' || safeSpecificRole === 'mixed',
+    evidence: (evidenceByPrimary.get(primaryRole) || [])
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+      .slice(0, 5)
+      .map(item => `${item.count}x ${item.name}`)
+  }
 }
 
 function createContainerHelpers ({
@@ -198,7 +345,8 @@ function createContainerHelpers ({
       lastSeenAt: now,
       lastCheckedAt: 0,
       lastFailure: null,
-      failures: 0
+      failures: 0,
+      role: classifyContainerItems([], catalog)
     }
 
     entry.type = block.name
@@ -238,6 +386,7 @@ function createContainerHelpers ({
     entry.capacity = capacity
     entry.freeSlots = Math.max(0, capacity - items.length)
     entry.empty = counts.length === 0
+    entry.role = classifyContainerItems(counts, catalog)
     entry.accessible = true
     entry.blocked = false
     entry.lastFailure = null
@@ -307,6 +456,31 @@ function createContainerHelpers ({
     return entry.items.some(item => inventory.itemTargetMatchesName(target, item.name))
   }
 
+  function entryRoleMatchesItem (entry, itemName) {
+    if (!entry?.role || !itemName) return 0
+    const itemRole = classifyItemStorageRole(itemName, catalog)
+    const role = entry.role
+    let score = 0
+    if (role.primaryRole === itemRole.primaryRole) score += 45
+    if (role.secondaryRole !== 'unknown' && role.secondaryRole !== 'mixed' && role.secondaryRole === itemRole.secondaryRole) score += 55
+    if (role.specificRole !== 'unknown' && role.specificRole !== 'mixed' && role.specificRole === itemRole.specificRole) score += 80
+    if (role.primaryRole === 'mixed') score += 8
+    return score * Math.max(0.35, role.confidence || 0.35)
+  }
+
+  function targetCandidateNames (target) {
+    if (!target) return []
+    return [
+      ...target.itemNames || [],
+      ...target.resolution?.candidates?.filter(candidate => candidate.kind === 'item').map(candidate => candidate.name) || []
+    ]
+  }
+
+  function entryRoleMatchesTarget (entry, target) {
+    return targetCandidateNames(target)
+      .reduce((best, name) => Math.max(best, entryRoleMatchesItem(entry, name)), 0)
+  }
+
   function countTargetInEntry (entry, target) {
     if (!entry?.items?.length) return 0
     return entry.items
@@ -334,7 +508,10 @@ function createContainerHelpers ({
         let score = 80 - entryDistance(entry) * 3
         if (purpose === 'search' && target) {
           if (entryHasTarget(entry, target)) score += 140
-          else if (entryIsFresh(entry)) score -= 45
+          else {
+            score += entryRoleMatchesTarget(entry, target)
+            if (entryIsFresh(entry)) score -= 45
+          }
         }
         if (purpose === 'deposit') {
           if (entry.freeSlots > 0) score += 45
@@ -424,12 +601,17 @@ function createContainerHelpers ({
     }
   }
 
+  function formatEntryRole (entry) {
+    const role = entry.role || classifyContainerItems(entry.items || [], catalog)
+    return `${role.primaryRole}/${role.secondaryRole}/${role.specificRole} ${Math.round((role.confidence || 0) * 100)}%`
+  }
+
   function inspectSummary (entry) {
     if (!entry.lastCheckedAt) return `${entry.type} (${entry.position.x},${entry.position.y},${entry.position.z}) nao verificado`
     if (entry.lastFailure) return `${entry.type} (${entry.position.x},${entry.position.y},${entry.position.z}) falhou: ${entry.lastFailure}`
     const items = entry.items.length > 0 ? formatCounts(entry.items.slice(0, 8)) : 'vazio'
     const age = Math.round((Date.now() - entry.lastCheckedAt) / 1000)
-    return `${entry.type} (${entry.position.x},${entry.position.y},${entry.position.z}) ${items} ha ${age}s`
+    return `${entry.type} (${entry.position.x},${entry.position.y},${entry.position.z}) [${formatEntryRole(entry)}] ${items} ha ${age}s`
   }
 
   async function inspectEntry (entry, skill) {
@@ -680,6 +862,7 @@ function createContainerHelpers ({
       .map((entry) => {
         let score = 80 - entryDistance(entry) * 3
         if (entry.items?.some(item => planNames.has(item.name))) score += 120
+        for (const item of plan) score += entryRoleMatchesItem(entry, item.name)
         if (entry.freeSlots > 0) score += 40
         if (!entry.lastCheckedAt) score += 20
         return { entry, score }
@@ -770,6 +953,7 @@ function createContainerHelpers ({
         type: entry.type,
         position: entry.position,
         items: entry.items.slice(0, 12),
+        role: entry.role,
         fresh: entryIsFresh(entry),
         accessible: entry.accessible,
         lastFailure: entry.lastFailure
@@ -799,5 +983,7 @@ module.exports = {
   parseContainerSearchCommand,
   parseContainerWithdrawCommand,
   parseContainerDepositCommand,
+  classifyItemStorageRole,
+  classifyContainerItems,
   createContainerHelpers
 }

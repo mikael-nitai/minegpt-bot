@@ -6,7 +6,9 @@ const {
   isContainerCommandText,
   parseContainerSearchCommand,
   parseContainerWithdrawCommand,
-  parseContainerDepositCommand
+  parseContainerDepositCommand,
+  classifyItemStorageRole,
+  classifyContainerItems
 } = require('../containers')
 
 assert.strictEqual(isContainerBlockName('chest'), true)
@@ -53,5 +55,48 @@ const catalog = createMinecraftCatalog(minecraftData('1.20.4'))
 assert.strictEqual(catalog.catalogBlockHasCategory('chest', 'container'), true)
 assert.strictEqual(catalog.catalogBlockHasCategory('barrel', 'container'), true)
 assert.strictEqual(catalog.catalogBlockHasCategory('white_shulker_box', 'container'), true)
+
+assert.deepStrictEqual(classifyItemStorageRole('oak_log', catalog), {
+  primaryRole: 'blocks',
+  secondaryRole: 'wood',
+  specificRole: 'oak'
+})
+
+assert.deepStrictEqual(classifyItemStorageRole('cobbled_deepslate', catalog), {
+  primaryRole: 'blocks',
+  secondaryRole: 'stone',
+  specificRole: 'deepslate'
+})
+
+assert.deepStrictEqual(classifyContainerItems([
+  { name: 'oak_log', count: 32 },
+  { name: 'oak_planks', count: 32 }
+], catalog), {
+  primaryRole: 'blocks',
+  secondaryRole: 'wood',
+  specificRole: 'oak',
+  confidence: 1,
+  mixed: false,
+  evidence: ['32x oak_log', '32x oak_planks']
+})
+
+assert.strictEqual(classifyContainerItems([
+  { name: 'spruce_log', count: 40 },
+  { name: 'oak_log', count: 10 }
+], catalog).specificRole, 'spruce')
+
+assert.strictEqual(classifyContainerItems([
+  { name: 'cobblestone', count: 48 },
+  { name: 'stone', count: 8 }
+], catalog).specificRole, 'cobblestone')
+
+assert.strictEqual(classifyContainerItems([
+  { name: 'oak_log', count: 16 },
+  { name: 'cobblestone', count: 16 }
+], catalog).secondaryRole, 'mixed')
+
+assert.strictEqual(classifyContainerItems([
+  { name: 'name_tag', count: 1 }
+], catalog).primaryRole, 'unknown')
 
 console.log('containers ok')

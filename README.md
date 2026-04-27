@@ -16,7 +16,7 @@ O bot ja possui:
 - colocacao segura de blocos simples no mundo;
 - busca manual e automatica de drops;
 - crafting direto seguro e cadeia curta para itens basicos;
-- interacao inicial com containers: scan, memoria, busca, retirada e deposito;
+- interacao com containers: scan, memoria, busca, retirada, deposito e classificacao logistica semantica;
 - Survival Guard com diagnostico, pedidos de ajuda, comida automatica e reacoes curtas;
 - skill registry, ActionResult e snapshot de estado para futuro planner/IA.
 
@@ -227,7 +227,7 @@ Esses comandos expõem estado e skills registradas para a futura camada de lingu
 - `survival.js`: Survival Guard, riscos e reacoes curtas.
 - `crafting.js`: crafting direto seguro e cadeia curta para itens basicos.
 - `placement.js`: colocacao segura de blocos simples.
-- `containers.js`: memoria e interacao segura com containers.
+- `containers.js`: memoria, interacao segura e classificacao logistica de containers.
 - `skills.js`: skill registry para futura IA/planner, com contratos de argumentos, requisitos, efeitos, risco, custo e `plan()`.
 - `action-result.js`: resultado padronizado de acoes, com codigos, severidade, retry, requisitos faltantes e sugestoes para planner.
 - `state.js`: snapshot estruturado do estado do bot.

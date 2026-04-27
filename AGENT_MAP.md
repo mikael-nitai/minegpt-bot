@@ -43,7 +43,7 @@ index.js
 - `collection.js`: coleta/mineracao, selecao de alvo percebido, drops e validacao basica.
 - `placement.js`: colocacao simples e segura de blocos.
 - `crafting.js`: crafting direto, receitas, faltas e cadeia curta de dependencias basicas.
-- `containers.js`: memoria de containers, scan, busca, retirada e deposito.
+- `containers.js`: memoria de containers, scan, busca, retirada, deposito e classificacao logistica.
 - `survival.js`: Survival Guard, avaliacao de risco, pedidos de ajuda e reacoes curtas.
 - `skills.js`: contrato planejavel das skills, `plan()`, validacao, pre/post-condicoes e timeout.
 - `action-result.js`: formato padrao de resultado de acoes.
@@ -198,11 +198,18 @@ containers.scan/search/withdraw/deposit
   -> descobre containers por percepcao/busca local
   -> move ate container
   -> abre, le janela, fecha sempre
+  -> classifica papel logistico por conteudo
   -> atualiza memoria
   -> retira/deposita conforme modo
 ```
 
 Sempre preserve fechamento de janelas em `finally`. Evite loops: use limites de raio, visited set, cooldown/memoria e timeout.
+
+Containers usam classificacao em camadas: `primaryRole`, `secondaryRole`, `specificRole`, `confidence`, `mixed` e `evidence`. Casos especiais relevantes:
+
+- madeiras: `blocks/wood/oak`, `blocks/wood/spruce`, etc.
+- pedras: `blocks/stone/stone`, `blocks/stone/cobblestone`, `blocks/stone/andesite`, `blocks/stone/diorite`, `blocks/stone/granite`, `blocks/stone/deepslate`.
+- quando a categoria ampla e clara mas a subcategoria nao e, use `mixed` ou `unknown` na camada especifica, nao force certeza falsa.
 
 ### Survival Guard
 
