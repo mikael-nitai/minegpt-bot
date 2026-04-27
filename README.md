@@ -231,6 +231,7 @@ Esses comandos expõem estado e skills registradas para a futura camada de lingu
 - `skills.js`: skill registry para futura IA/planner, com contratos de argumentos, requisitos, efeitos, risco, custo e `plan()`.
 - `action-result.js`: resultado padronizado de acoes.
 - `state.js`: snapshot estruturado do estado do bot.
+- `AGENT_MAP.md`: mapa operacional para agentes de codigo depurarem e evoluirem o projeto.
 - `scripts/`: smoke tests e checagem sintatica.
 - `test/`: testes unitarios com `node:test`.
 
