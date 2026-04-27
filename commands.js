@@ -235,6 +235,11 @@ function createCommandSystem ({
       return
     }
 
+    if (text === 'planner compacto') {
+      sendLongMessage(context.stateReporter.describePlannerSnapshot())
+      return
+    }
+
     if (text === 'skills') {
       sendLongMessage(context.skillRegistry.describe())
       return

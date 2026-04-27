@@ -1,11 +1,13 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const minecraftData = require('minecraft-data')
+const { Vec3 } = require('vec3')
 const { createMinecraftCatalog } = require('../catalog')
 const { createInventoryHelpers } = require('../inventory')
 const { actionOk, actionFail, itemRequirement, suggestSkillAction } = require('../action-result')
 const { createSkillRegistry, validateArgs } = require('../skills')
 const { createStateReporter } = require('../state')
+const { setupSkillRegistry } = require('../main')
 
 function createMockInventory () {
   const mcData = minecraftData('1.20.4')
@@ -67,6 +69,15 @@ function createMockInventory () {
   })
 
   return { inventory, bot }
+}
+
+function assertJsonSafe (value, seen = new Set()) {
+  assert.notEqual(typeof value, 'function')
+  if (!value || typeof value !== 'object') return
+  assert.equal(seen.has(value), false, 'snapshot nao deve conter referencia circular')
+  seen.add(value)
+  for (const child of Object.values(value)) assertJsonSafe(child, seen)
+  seen.delete(value)
 }
 
 test('inventario formata, diferencia snapshots e resolve aliases', () => {
@@ -201,12 +212,18 @@ test('state reporter oferece snapshot compacto para planner', () => {
   const snapshot = stateReporter.getPlannerSnapshot()
   assert.equal(snapshot.online, true)
   assert.equal(snapshot.canAct, true)
+  assert.equal(snapshot.health, 18)
+  assert.equal(snapshot.food, 17)
   assert.deepEqual(snapshot.vitals.position, { x: 10.3, y: 64, z: -5.5 })
-  assert.deepEqual(snapshot.inventory[0], { name: 'bread', count: 3 })
-  assert.equal(snapshot.attention.top.length, 2)
-  assert.equal(snapshot.attention.hazards[0].name, 'zombie')
+  assert.deepEqual(snapshot.inventory.items[0], { name: 'bread', count: 3 })
+  assert.equal(snapshot.inventory.focus.tools[0].name, 'stone_pickaxe')
+  assert.equal(snapshot.perception.topAttention.length, 2)
+  assert.equal(snapshot.perception.hazards[0].name, 'zombie')
   assert.equal(snapshot.containers.known, 2)
+  assertJsonSafe(snapshot)
+  assert.doesNotThrow(() => JSON.stringify(snapshot))
   assert.match(stateReporter.describeForPlanner(), /"canAct":true/)
+  assert.match(stateReporter.describePlannerSnapshot(), /"perception"/)
 })
 
 test('planner policy bloqueia acoes destrutivas ou grandes sem permissao explicita', async () => {
@@ -250,6 +267,72 @@ test('planner policy bloqueia acoes destrutivas ou grandes sem permissao explici
 
   const allowedWithExplicitIntent = await registry.execute('inventory.drop', { item: 'coal' }, { explicitUserIntent: true })
   assert.equal(allowedWithExplicitIntent.ok, true)
+})
+
+test('skills de movimento concluido validam chegada real ao alvo', async () => {
+  const bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    players: {},
+    pathfinder: {
+      stop: () => {},
+      goto: async () => {
+        bot.entity.position = new Vec3(2, 64, 0)
+      }
+    },
+    clearControlStates: () => {}
+  }
+  const context = {
+    bot,
+    reconnecting: false,
+    navigationController: {
+      stop: () => {},
+      applyMovements: () => {}
+    },
+    cancelActiveSkill: () => false
+  }
+  const registry = setupSkillRegistry({
+    context,
+    config: { owner: 'NWintendo' },
+    collection: { collectByTargetAction: () => actionOk('collection.collect') },
+    inventory: {
+      equipItemAction: () => actionOk('inventory.equip'),
+      dropItemAction: () => actionOk('inventory.drop'),
+      moveItemToHotbarAction: () => actionOk('inventory.hotbar'),
+      normalizeItemTarget: () => null
+    },
+    craftingHelpers: {
+      craftByQuery: () => actionOk('crafting.craft'),
+      describeRecipeByQuery: () => 'receita'
+    },
+    placementHelpers: { placeByRequest: () => actionOk('blocks.place') },
+    containerHelpers: {
+      scanAndInspectContainers: () => actionOk('containers.scan'),
+      searchItemByQuery: () => actionOk('containers.search'),
+      withdrawItemByQuery: () => actionOk('containers.withdraw'),
+      depositByRequest: () => actionOk('containers.deposit'),
+      clearMemory: () => 0
+    },
+    survivalGuard: {
+      describeStatus: () => 'seguro',
+      assess: () => ({ severity: 'low' }),
+      setEnabled: () => {}
+    },
+    stateReporter: {
+      getStateSnapshot: () => ({}),
+      getPlannerSnapshot: () => ({})
+    }
+  })
+
+  const reached = await registry.execute('movement.go_to', { x: 2, y: 64, z: 0 })
+  assert.equal(reached.ok, true)
+  assert.equal(reached.code, 'goal_reached')
+
+  bot.pathfinder.goto = async () => {
+    bot.entity.position = new Vec3(5, 64, 0)
+  }
+  const missed = await registry.execute('movement.go_to', { x: 20, y: 64, z: 0 })
+  assert.equal(missed.ok, false)
+  assert.equal(missed.code, 'goal_not_reached')
 })
 
 test('ActionResult padroniza sucesso e falha', () => {

@@ -80,6 +80,78 @@ function createSkillState (context) {
   }
 }
 
+function positionSnapshot (position) {
+  if (!position) return null
+  return {
+    x: Math.round(position.x * 10) / 10,
+    y: Math.round(position.y * 10) / 10,
+    z: Math.round(position.z * 10) / 10
+  }
+}
+
+function distanceBetween (a, b) {
+  if (!a || !b) return Infinity
+  const dx = a.x - b.x
+  const dy = a.y - b.y
+  const dz = a.z - b.z
+  return Math.sqrt(dx * dx + dy * dy + dz * dz)
+}
+
+async function runCompletedMovement ({ context, goal, targetPosition, tolerance, label, timeoutMs, startedAt }) {
+  const startPosition = context.bot.entity.position.clone()
+  context.navigationController.stop(`skill ${label}`)
+  context.navigationController.applyMovements()
+
+  try {
+    await withTimeout(context.bot.pathfinder.goto(goal), timeoutMs, label)
+    const finalPosition = context.bot.entity.position.clone()
+    const distance = distanceBetween(finalPosition, targetPosition)
+
+    if (distance > tolerance) {
+      return actionFail(label, `Movimento terminou longe demais do alvo (${Math.round(distance * 10) / 10} blocos).`, {
+        target: positionSnapshot(targetPosition),
+        finalPosition: positionSnapshot(finalPosition),
+        distance
+      }, startedAt, {
+        code: 'goal_not_reached',
+        retryable: true,
+        positionDelta: {
+          from: positionSnapshot(startPosition),
+          to: positionSnapshot(finalPosition)
+        }
+      })
+    }
+
+    return actionOk(label, `Cheguei ao alvo (${Math.round(distance * 10) / 10} blocos).`, {
+      target: positionSnapshot(targetPosition),
+      finalPosition: positionSnapshot(finalPosition),
+      distance
+    }, startedAt, {
+      code: 'goal_reached',
+      positionDelta: {
+        from: positionSnapshot(startPosition),
+        to: positionSnapshot(finalPosition)
+      }
+    })
+  } catch (error) {
+    const finalPosition = context.bot.entity?.position?.clone?.() || context.bot.entity?.position
+    return actionFail(label, `Falha de movimento: ${error.message}`, {
+      target: positionSnapshot(targetPosition),
+      finalPosition: positionSnapshot(finalPosition)
+    }, startedAt, {
+      code: error.actionCode === 'timeout' ? 'timeout' : 'movement_failed',
+      retryable: true,
+      positionDelta: {
+        from: positionSnapshot(startPosition),
+        to: positionSnapshot(finalPosition)
+      }
+    })
+  } finally {
+    context.bot.pathfinder.stop()
+    context.bot.clearControlStates()
+  }
+}
+
 function setupSkillRegistry ({
   context,
   config,
@@ -110,22 +182,39 @@ function setupSkillRegistry ({
 
   registry.register({
     id: 'movement.come_here',
-    description: 'Vai ate o jogador dono.',
+    description: 'Vai ate o jogador dono e so retorna sucesso quando chegar.',
     risk: 'low',
-    timeoutMs: 1000,
+    timeoutMs: 30000,
     requires: ['botOnline', 'navigationReady', 'notReconnecting'],
     effects: ['position', 'movement'],
     cost: { base: 2, movement: true },
     plannerHints: 'Use para aproximar o bot do dono antes de interagir ou receber itens.',
-    run: () => {
-      context.navigationController.comeHere(config.owner)
-      return actionOk('movement.come_here', 'indo ate o dono')
+    run: async () => {
+      const startedAt = Date.now()
+      const target = context.bot.players[config.owner]?.entity
+      if (!target) {
+        return actionFail('movement.come_here', `Nao encontrei ${config.owner} por perto.`, { owner: config.owner }, startedAt, {
+          code: 'target_not_found',
+          retryable: true
+        })
+      }
+
+      const targetPosition = target.position.clone()
+      return runCompletedMovement({
+        context,
+        goal: new goals.GoalNear(targetPosition.x, targetPosition.y, targetPosition.z, 1),
+        targetPosition,
+        tolerance: 3,
+        label: 'movement.come_here',
+        timeoutMs: 28000,
+        startedAt
+      })
     }
   })
 
   registry.register({
     id: 'movement.go_to',
-    description: 'Vai ate coordenadas X Y Z.',
+    description: 'Vai ate coordenadas X Y Z e so retorna sucesso quando chegar.',
     risk: 'medium',
     timeoutMs: 30000,
     inputSchema: { x: 'number', y: 'number', z: 'number' },
@@ -133,10 +222,19 @@ function setupSkillRegistry ({
     effects: ['position', 'movement'],
     cost: { base: 4, movement: true },
     plannerHints: 'Use apenas quando houver coordenadas confiaveis e rota razoavelmente segura.',
-    run: ({ x, y, z }) => {
+    run: async ({ x, y, z }) => {
+      const startedAt = Date.now()
       if ([x, y, z].some(value => typeof value !== 'number')) return actionFail('movement.go_to', 'coordenadas invalidas')
-      context.navigationController.goToCoords({ x, y, z })
-      return actionOk('movement.go_to', `indo para ${x} ${y} ${z}`, { x, y, z })
+      const targetPosition = new Vec3(x, y, z)
+      return runCompletedMovement({
+        context,
+        goal: new goals.GoalBlock(x, y, z),
+        targetPosition,
+        tolerance: 1.8,
+        label: 'movement.go_to',
+        timeoutMs: 28000,
+        startedAt
+      })
     }
   })
 

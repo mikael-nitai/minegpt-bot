@@ -47,7 +47,7 @@ index.js
 - `survival.js`: Survival Guard, avaliacao de risco, pedidos de ajuda e reacoes curtas.
 - `skills.js`: contrato planejavel das skills, `plan()`, validacao, pre/post-condicoes e timeout.
 - `action-result.js`: formato padrao de resultado de acoes.
-- `state.js`: snapshot estruturado para debug e futuro planner.
+- `state.js`: snapshot estruturado para debug e snapshot compacto para planner.
 - `utils.js`: helpers pequenos compartilhados.
 - `scripts/`: smoke tests e checagem sintatica.
 - `test/`: testes unitarios com `node:test`.
@@ -285,7 +285,7 @@ Leia tambem `docs/AI_PLANNER_READINESS.md` antes de implementar qualquer comando
 O planner futuro deve consumir:
 
 ```text
-state.snapshot
+state.planner_snapshot
 SkillRegistry.list()
 SkillRegistry.plan()
 SkillRegistry.execute()
@@ -294,6 +294,8 @@ inventory summaries/snapshots
 survival status
 container memory
 ```
+
+`state.snapshot` continua util para debug completo. Para LLM/planner, prefira `state.planner_snapshot` ou `stateReporter.describePlannerSnapshot()`.
 
 O planner nao deve conhecer detalhes do Mineflayer quando uma skill ja encapsula a acao. Se o planner precisar saber detalhes demais para agir, provavelmente falta contrato, `state` ou skill intermediaria.
 

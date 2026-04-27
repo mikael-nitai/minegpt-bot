@@ -54,9 +54,7 @@ Estas skills ja retornam `ActionResult` real ou sao consultas simples:
 
 Estas skills existem, mas `ok=true` nao significa necessariamente que a tarefa terminou:
 
-- `movement.follow_owner`: retorna sucesso apos definir goal continuo, nao apos acompanhar de fato.
-- `movement.come_here`: retorna sucesso apos definir goal, nao apos chegar.
-- `movement.go_to`: retorna sucesso apos definir goal, nao apos chegar nas coordenadas.
+- `movement.follow_owner`: por natureza e continuo; sucesso significa que o follow foi iniciado.
 - `inventory.drop`: agora retorna falha honesta para item ausente/quantidade invalida; em `plannerMode`, a policy inicial exige permissao explicita do usuario.
 - `drops.collect`: retorna sucesso mesmo se nenhum item foi coletado; o planner precisa verificar `data.gains`.
 
@@ -64,7 +62,7 @@ Estas skills existem, mas `ok=true` nao significa necessariamente que a tarefa t
 
 No momento, as skills prioritarias de inventario e coleta nao dependem mais de wrappers de chat para indicar sucesso/falha ao `SkillRegistry`.
 
-Pendencia restante nesta categoria: revisar gradualmente skills de movimento continuo, porque elas ainda retornam sucesso quando o goal foi iniciado, nao quando foi concluido.
+Pendencia restante nesta categoria: `movement.follow_owner` continua sendo uma skill continua. Para movimentos pontuais, `movement.come_here` e `movement.go_to` ja aguardam conclusao e validam distancia final.
 
 ## Modulos Que Misturam Chat Command E Skill Planejavel
 
@@ -92,14 +90,14 @@ As funcoes publicas usadas por comando humano (`collectBlockByTarget`, `collectM
 
 As funcoes de movimento sao orientadas a comando continuo ou goal assíncrono. Elas nao retornam quando o objetivo foi concluido.
 
-Recomendacao: criar skills planejaveis separadas para `movement.goto_completed` e `movement.come_here_completed`, com wait por `goal_reached`, timeout real, cancelamento e validacao de distancia final. As skills atuais podem continuar como comandos/controle.
+Estado atual: `movement.go_to` e `movement.come_here` via `SkillRegistry` usam `pathfinder.goto()`, timeout, cleanup e validacao final de distancia. Comandos humanos de chat continuam usando o controlador de navegacao continuo.
 
 ## ActionResult Que Precisa Ficar Mais Honesto
 
 Prioridade alta restante:
 
 - `inventory.drop`: ja retorna `code`, `inventoryDelta` negativo e `worldChanged: true`; em `plannerMode`, ja e bloqueada sem permissao explicita.
-- `movement.go_to`/`come_here`: distinguir `goal_started` de `goal_reached`. Para planner, preferir skill que aguarde conclusao.
+- `movement.follow_owner`: documentar no planner como acao continua, nao objetivo concluido.
 
 Prioridade media:
 
@@ -196,17 +194,15 @@ Riscos aceitaveis para primeira versao experimental:
 
 ### P0 - Obrigatorio Antes Do Primeiro Planner
 
-1. Separar skills de movimento em:
-   - iniciar movimento/follow;
-   - movimento concluido com validacao final.
-2. Manter inventario e coleta como exemplos de fronteira correta: actions estruturadas em modulo de dominio, comandos de chat como adaptadores, `SkillRegistry` chamando actions diretamente.
-3. Expandir policy inicial conforme surgirem comandos `bot` reais.
+1. Manter inventario, coleta e movimento pontual como exemplos de fronteira correta: actions estruturadas, comandos de chat como adaptadores, `SkillRegistry` retornando resultado real.
+2. Expandir policy inicial conforme surgirem comandos `bot` reais.
 
 Ja resolvido:
 
 - `collection.collect` no registry usa `collectByTargetAction()`.
 - `getPlannerSnapshot()` foi adicionado em `state.js`.
 - `SkillRegistry` tem policy inicial opcional em `plannerMode`, bloqueando `inventory.drop`, `survival.set_enabled`, `containers.clear_memory`, movimento distante e coleta acima de 3 blocos sem `explicitUserIntent`.
+- `movement.go_to` e `movement.come_here` aguardam chegada real quando chamados como skill.
 
 ### P1 - Muito Recomendado
 
@@ -252,7 +248,7 @@ Os testes que dependem diretamente de Mineflayer real ainda podem ficar manuais/
 - Adicionar `getPlannerSnapshot()`.
 - Criar policy inicial de skills permitidas para IA.
 
-Estado: fase 1 aplicada em nivel inicial. Ainda falta endurecer movimento concluido e cancelamento real em timeout.
+Estado: fase 1 aplicada em nivel inicial. Ainda falta evoluir cancelamento real em timeout para actions mais complexas.
 
 ### Fase 2 - Primeiro Parser `bot`, Sem API Externa
 

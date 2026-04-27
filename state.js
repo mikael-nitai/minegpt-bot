@@ -25,8 +25,17 @@ function createStateReporter ({
       name: token.name,
       category: token.category,
       score: token.score,
-      distance: Math.round(token.distance * 10) / 10,
-      position: token.position,
+      distance: Number.isFinite(token.distance) ? Math.round(token.distance * 10) / 10 : null,
+      position: positionSnapshot(token.position),
+      heads: token.heads
+        ? {
+            danger: token.heads.danger || 0,
+            resource: token.heads.resource || 0,
+            navigation: token.heads.navigation || 0,
+            objective: token.heads.objective || 0,
+            opportunity: token.heads.opportunity || 0
+          }
+        : undefined,
       actionHint: token.recommendedAction || null
     }))
   }
@@ -88,6 +97,33 @@ function createStateReporter ({
       })
   }
 
+  function inventoryFocus (items) {
+    const isTool = name => /_(pickaxe|axe|shovel|hoe|sword)$/.test(name)
+    const isFood = name => /bread|apple|carrot|potato|beef|porkchop|chicken|mutton|cod|salmon|cookie|melon|berries/.test(name)
+    const isBasicBlock = name => /dirt|cobblestone|stone|deepslate|planks|log|sand|gravel/.test(name)
+    const isResource = name => /coal|iron|gold|copper|diamond|emerald|redstone|lapis|quartz|ingot|ore|raw_/.test(name)
+
+    return {
+      tools: items.filter(item => isTool(item.name)).slice(0, 6),
+      food: items.filter(item => isFood(item.name)).slice(0, 6),
+      basicBlocks: items.filter(item => isBasicBlock(item.name)).slice(0, 6),
+      resources: items.filter(item => isResource(item.name)).slice(0, 8),
+      hasFreeSlot: typeof inventory.inventoryHasFreeSlot === 'function' ? inventory.inventoryHasFreeSlot() : null
+    }
+  }
+
+  function compactContainers (containerState, containerTokens) {
+    if (!containerState && containerTokens.length === 0) return null
+
+    return {
+      known: containerState?.knownCount ?? null,
+      recentlyScanned: containerState?.lastScanAgeMs != null ? containerState.lastScanAgeMs < 300000 : null,
+      topRoles: (containerState?.roles || []).slice(0, 8),
+      nearby: compactTokens(containerTokens, 5),
+      importantKnownItems: (containerState?.knownItems || containerState?.items || []).slice?.(0, 10) || []
+    }
+  }
+
   function getPlannerSnapshot () {
     const bot = getBot()
     const activeSkill = getActiveSkill()?.name || null
@@ -109,15 +145,25 @@ function createStateReporter ({
     const survivalStatus = survival.assess()
     const containerState = getContainers?.()?.getStateSnapshot?.() || null
     const hazards = tokens.filter(token => token.heads?.danger >= 35)
+    const drops = tokens.filter(token => token.kind === 'drop' || token.kind === 'dropped_item' || /drop|item/.test(token.category || ''))
+    const containerTokens = tokens.filter(token => token.kind === 'container' || /container|chest|barrel|shulker/.test(token.category || ''))
+    const inventoryItems = compactInventoryObjects(24)
+    const timestamp = Date.now()
 
     return {
       online: true,
       username: bot.username,
       owner: config.owner,
+      timestamp,
       canAct: !reconnecting && !activeSkill && survivalStatus.severity !== 'critical',
       busy: Boolean(activeSkill),
       reconnecting,
       activeSkill,
+      health: bot.health,
+      food: bot.food,
+      saturation: Math.round((bot.foodSaturation || 0) * 10) / 10,
+      oxygen: bot.oxygenLevel ?? null,
+      position: positionSnapshot(bot.entity.position),
       vitals: {
         health: bot.health,
         food: bot.food,
@@ -126,29 +172,30 @@ function createStateReporter ({
         position: positionSnapshot(bot.entity.position)
       },
       heldItem: bot.heldItem ? { name: bot.heldItem.name, count: bot.heldItem.count } : null,
-      inventory: compactInventoryObjects(16),
+      inventory: {
+        items: inventoryItems.slice(0, 16),
+        totalKinds: inventoryItems.length,
+        focus: inventoryFocus(inventoryItems)
+      },
       objective: perception.perceptionState.objective,
-      attention: {
-        top: compactTokens(tokens, 5),
-        hazards: compactTokens(hazards, 3),
-        resources: compactTokens(tokens.filter(token => token.heads?.resource >= 35 || token.heads?.opportunity >= 55), 5)
+      perception: {
+        topAttention: compactTokens(tokens, 6),
+        hazards: compactTokens(hazards, 4),
+        resources: compactTokens(tokens.filter(token => token.heads?.resource >= 35 || token.heads?.opportunity >= 55), 6),
+        drops: compactTokens(drops, 5),
+        containers: compactTokens(containerTokens, 5)
       },
       survival: {
         enabled: survival.state.enabled,
         severity: survivalStatus.severity,
         top: survivalStatus.top,
+        summary: survivalStatus.summary,
         safeToAct: survivalStatus.severity !== 'critical' && survivalStatus.severity !== 'high'
       },
       navigation: {
         summary: getNavigationController()?.describe() || 'sem navigation controller'
       },
-      containers: containerState
-        ? {
-            known: containerState.knownCount,
-            recentlyScanned: containerState.lastScanAgeMs != null ? containerState.lastScanAgeMs < 300000 : null,
-            topRoles: containerState.roles || []
-          }
-        : null,
+      containers: compactContainers(containerState, containerTokens),
       recentCollections: collectionState.recent.slice(0, 3)
     }
   }
@@ -175,11 +222,16 @@ function createStateReporter ({
     return JSON.stringify(state)
   }
 
+  function describePlannerSnapshot () {
+    return describeForPlanner()
+  }
+
   return {
     getStateSnapshot,
     getPlannerSnapshot,
     describeForChat,
-    describeForPlanner
+    describeForPlanner,
+    describePlannerSnapshot
   }
 }
 
