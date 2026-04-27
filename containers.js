@@ -122,7 +122,6 @@ function createContainerHelpers ({
   perception,
   goals,
   withTimeout,
-  owner,
   getActiveSkill,
   startSkill,
   finishSkill,
@@ -400,14 +399,15 @@ function createContainerHelpers ({
       throw new Error('container nao encontrado na posicao memorizada')
     }
 
-    let window = null
+    let window
     try {
       await current.lookAt(block.position.offset(0.5, 0.5, 0.5), true).catch(() => {})
       window = await withTimeout(current.openContainer(block), OPEN_TIMEOUT_MS, `abrir ${block.name}`)
       updateEntryFromWindow(entry, window, block)
     } catch (err) {
-      markFailure(entry, err.message)
-      throw new Error(`${actionLabel}: ${err.message}`)
+      const message = err?.message || String(err)
+      markFailure(entry, message)
+      throw new Error(`${actionLabel}: ${message}`, { cause: err })
     }
 
     try {
@@ -415,7 +415,8 @@ function createContainerHelpers ({
       updateEntryFromWindow(entry, window, block)
       return result
     } catch (err) {
-      throw new Error(`${actionLabel}: ${err.message}`)
+      const message = err?.message || String(err)
+      throw new Error(`${actionLabel}: ${message}`, { cause: err })
     } finally {
       try {
         if (window?.close) window.close()

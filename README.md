@@ -231,7 +231,8 @@ Esses comandos expõem estado e skills registradas para a futura camada de lingu
 - `skills.js`: skill registry para futura IA/planner.
 - `action-result.js`: resultado padronizado de acoes.
 - `state.js`: snapshot estruturado do estado do bot.
-- `scripts/`: smoke tests.
+- `scripts/`: smoke tests e checagem sintatica.
+- `test/`: testes unitarios com `node:test`.
 
 ## Testes
 
@@ -240,6 +241,19 @@ npm test
 ```
 
 Atualmente os testes verificam sintaxe e smoke tests de catalogo, inventario, skills, crafting, colocacao de blocos e containers.
+Agora tambem rodam ESLint e testes unitarios para parsers, catalogo, inventario, crafting, ActionResult, SkillRegistry e percepcao basica.
+
+Comandos uteis:
+
+```bash
+npm run check
+npm run lint
+npm run test:unit
+npm run test:smoke
+npm run coverage
+```
+
+O repositorio tambem possui GitHub Actions em `.github/workflows/ci.yml`, rodando `npm test` em push para `main` e pull requests.
 
 ## Seguranca e limitacoes
 

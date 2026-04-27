@@ -5,14 +5,18 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "check": "node --check index.js && node --check main.js && node --check bot-runtime.js && node --check commands.js && node --check navigation.js && node --check collection.js && node --check utils.js && node --check catalog.js && node --check inventory.js && node --check perception.js && node --check survival.js && node --check crafting.js && node --check placement.js && node --check containers.js && node --check action-result.js && node --check skills.js && node --check state.js && node --check scripts/check-catalog.js && node --check scripts/check-inventory.js && node --check scripts/check-skills.js && node --check scripts/check-crafting.js && node --check scripts/check-placement.js && node --check scripts/check-containers.js",
+    "check": "node scripts/check-syntax.js",
+    "lint": "eslint .",
+    "test:unit": "node --test",
     "test:catalog": "node scripts/check-catalog.js",
     "test:inventory": "node scripts/check-inventory.js",
     "test:skills": "node scripts/check-skills.js",
     "test:crafting": "node scripts/check-crafting.js",
     "test:placement": "node scripts/check-placement.js",
     "test:containers": "node scripts/check-containers.js",
-    "test": "npm run check && npm run test:catalog && npm run test:inventory && npm run test:skills && npm run test:crafting && npm run test:placement && npm run test:containers"
+    "test:smoke": "npm run test:catalog && npm run test:inventory && npm run test:skills && npm run test:crafting && npm run test:placement && npm run test:containers",
+    "coverage": "node --test --experimental-test-coverage",
+    "test": "npm run check && npm run lint && npm run test:unit && npm run test:smoke"
   },
   "keywords": [],
   "author": "",
@@ -22,5 +26,9 @@
     "minecraft-data": "^3.109.1",
     "mineflayer": "^4.37.0",
     "mineflayer-pathfinder": "^2.4.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.2.1"
   }
 }

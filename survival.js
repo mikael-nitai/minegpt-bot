@@ -1,6 +1,5 @@
 function createSurvivalGuard ({
   getBot,
-  Vec3,
   owner,
   perception,
   inventory,

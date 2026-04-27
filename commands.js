@@ -8,7 +8,6 @@ const {
 
 function createCommandSystem ({
   context,
-  config,
   inventory,
   perception,
   survivalGuard,

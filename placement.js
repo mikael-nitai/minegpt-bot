@@ -69,7 +69,6 @@ function createPlacementHelpers ({
   getBot,
   Vec3,
   catalog,
-  inventory,
   goals,
   withTimeout,
   owner,

@@ -333,7 +333,7 @@ function createPerceptionHelpers ({
     const reasons = []
     const sizeBonus = saturatedSizeBonus(blocks.length)
     let name = nearest.name
-    let category = 'block_group'
+    let category
     const extra = {
       size: blocks.length,
       nearest: positionOf(nearest),
@@ -419,7 +419,7 @@ function createPerceptionHelpers ({
     const distance = current.entity.position.distanceTo(block.position)
     const heads = { danger: 0, resource: 0, navigation: 0, goal: 0, opportunity: 0 }
     const reasons = []
-    let category = 'block'
+    let category
     const extra = {}
 
     if (catalogBlockHasCategory(block.name, 'container')) {

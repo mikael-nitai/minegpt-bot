@@ -21,7 +21,6 @@ function createCraftingHelpers ({
   finishSkill,
   assertSkillActive,
   getNavigationController,
-  getReconnecting,
   survival
 }) {
   const BASIC_CHAIN_TARGETS = new Set([
@@ -342,7 +341,7 @@ function createCraftingHelpers ({
   }
 
   function describeRecipeByQuery (query) {
-    const { target, itemName } = chooseCraftCandidate(query)
+    const { itemName } = chooseCraftCandidate(query)
     if (!itemName) return `Receita: nao encontrei item para "${query}".`
 
     const table = findNearbyCraftingTable()

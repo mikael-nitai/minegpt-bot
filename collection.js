@@ -39,7 +39,6 @@ function createCollectionSystem ({
     inventorySnapshot,
     diffInventorySnapshots,
     formatItemList,
-    normalizeItemTarget,
     itemTargetMatchesName,
     possibleDropNamesForBlock,
     inventoryCanReceiveAny
@@ -439,8 +438,11 @@ function createCollectionSystem ({
     let gains = []
 
     while (!isReconnecting() && Date.now() < deadline && visited < maxDrops) {
-      gains = diffInventorySnapshots(before, inventorySnapshot())
-      if (stopOnGain && gains.length > 0) break
+      const currentGains = diffInventorySnapshots(before, inventorySnapshot())
+      if (stopOnGain && currentGains.length > 0) {
+        gains = currentGains
+        break
+      }
 
       const drop = nearestDroppedItem(origin, radius, target)
       if (!drop) {
@@ -460,7 +462,9 @@ function createCollectionSystem ({
       await wait(100)
     }
 
-    gains = diffInventorySnapshots(before, inventorySnapshot())
+    if (gains.length === 0) {
+      gains = diffInventorySnapshots(before, inventorySnapshot())
+    }
     if (gains.length > 0) {
       recordCollection('drops proximos', gains)
       if (announce) bot().chat(`Drops coletados: ${formatItemList(gains)}.`)
