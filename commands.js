@@ -5,6 +5,7 @@ const {
   parseContainerWithdrawCommand,
   parseContainerDepositCommand
 } = require('./containers')
+const { actionFail } = require('./action-result')
 
 function createCommandSystem ({
   context,
@@ -21,9 +22,9 @@ function createCommandSystem ({
     formatItem,
     summarizeInventory,
     normalizeItemTarget,
-    findInventoryItems,
-    findInventoryItem,
-    hotbarSlotToInventorySlot,
+    equipItemAction,
+    dropItemAction,
+    moveItemToHotbarAction,
     describeStatus,
     describeHotbar
   } = inventory
@@ -53,78 +54,88 @@ function createCommandSystem ({
   }
 
   async function equipItemByName (itemName) {
-    const item = findInventoryItem(itemName)
-    if (!item) {
+    const result = await equipItemAction(itemName)
+
+    if (result.ok) {
+      bot().chat(`Segurando ${result.data.itemName || result.data.heldAfter || itemName}.`)
+      return result
+    }
+
+    if (result.code === 'item_not_found') {
       bot().chat(`Nao tenho ${itemName}.`)
-      return
+      return result
     }
 
-    if (item.ambiguous) {
-      bot().chat(`Nome ambiguo. Opcoes: ${item.names.join(', ')}`)
-      return
+    if (result.code === 'ambiguous_item') {
+      bot().chat(`Nome ambiguo. Opcoes: ${(result.data.options || []).join(', ')}`)
+      return result
     }
 
-    await bot().equip(item, 'hand')
-    bot().chat(`Segurando ${item.name}.`)
+    bot().chat(result.reason || 'Falha ao segurar item.')
+    return result
   }
 
   async function dropItemByName (itemName, amountText) {
-    const item = findInventoryItem(itemName)
-    if (!item) {
-      bot().chat(`Nao tenho ${itemName}.`)
-      return
-    }
+    const amount = amountText == null ? null : parsePositiveInteger(amountText)
 
-    if (item.ambiguous) {
-      bot().chat(`Nome ambiguo. Opcoes: ${item.names.join(', ')}`)
-      return
-    }
-
-    if (amountText == null) {
-      await bot().tossStack(item)
-      bot().chat(`Dropei ${formatItem(item)}.`)
-      return
-    }
-
-    const amount = parsePositiveInteger(amountText)
-    if (!amount) {
+    if (amountText != null && !amount) {
+      const result = actionFail('inventory.drop', 'Quantidade invalida para dropar item.', { item: itemName, amountText }, Date.now(), {
+        code: 'invalid_amount',
+        retryable: false
+      })
       bot().chat('Use: drop ITEM QUANTIDADE')
-      return
+      return result
     }
 
-    const total = findInventoryItems(item.name).reduce((sum, stack) => sum + stack.count, 0)
-    const amountToDrop = Math.min(amount, total)
+    const result = await dropItemAction(itemName, amount)
+    if (result.ok) {
+      bot().chat(result.message)
+      return result
+    }
 
-    await bot().toss(item.type, item.metadata, amountToDrop)
-    bot().chat(`Dropei ${amountToDrop}x ${item.name}.`)
+    if (result.code === 'item_not_found') {
+      bot().chat(`Nao tenho ${itemName}.`)
+      return result
+    }
+
+    if (result.code === 'ambiguous_item') {
+      bot().chat(`Nome ambiguo. Opcoes: ${(result.data.options || []).join(', ')}`)
+      return result
+    }
+
+    bot().chat(result.reason || 'Falha ao dropar item.')
+    return result
   }
 
   async function moveItemToHotbar (slotText, itemName) {
     const slotNumber = parsePositiveInteger(slotText)
     if (!slotNumber || slotNumber < 1 || slotNumber > 9) {
+      const result = actionFail('inventory.hotbar', 'Slot invalido. Use 1 a 9.', { slot: slotText, item: itemName }, Date.now(), {
+        code: 'invalid_slot',
+        retryable: false
+      })
       bot().chat('Use slot de 1 a 9.')
-      return
+      return result
     }
 
-    const item = findInventoryItem(itemName)
-    if (!item) {
+    const result = await moveItemToHotbarAction(slotNumber, itemName)
+    if (result.ok) {
+      bot().chat(result.message)
+      return result
+    }
+
+    if (result.code === 'item_not_found') {
       bot().chat(`Nao tenho ${itemName}.`)
-      return
+      return result
     }
 
-    if (item.ambiguous) {
-      bot().chat(`Nome ambiguo. Opcoes: ${item.names.join(', ')}`)
-      return
+    if (result.code === 'ambiguous_item') {
+      bot().chat(`Nome ambiguo. Opcoes: ${(result.data.options || []).join(', ')}`)
+      return result
     }
 
-    const destSlot = hotbarSlotToInventorySlot(slotNumber)
-    if (item.slot === destSlot) {
-      bot().chat(`${item.name} ja esta no slot ${slotNumber}.`)
-      return
-    }
-
-    await bot().moveSlotItem(item.slot, destSlot)
-    bot().chat(`Coloquei ${item.name} na hotbar ${slotNumber}.`)
+    bot().chat(result.reason || 'Falha ao mover item para hotbar.')
+    return result
   }
 
   async function handleCommand (username, message) {

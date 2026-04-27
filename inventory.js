@@ -1,3 +1,5 @@
+const { actionOk, actionFail, itemRequirement, suggestSkillAction } = require('./action-result')
+
 function createInventoryHelpers ({ getBot, mcData, catalog, toolTier }) {
   const {
     normalizeItemName,
@@ -48,6 +50,20 @@ function createInventoryHelpers ({ getBot, mcData, catalog, toolTier }) {
     }
 
     return gains.sort((a, b) => a.name.localeCompare(b.name))
+  }
+
+  function inventoryDeltaBetweenSnapshots (before, after) {
+    const changes = []
+    const itemNames = new Set([...before.keys(), ...after.keys()])
+
+    for (const itemName of itemNames) {
+      const beforeCount = before.get(itemName) || 0
+      const afterCount = after.get(itemName) || 0
+      const delta = afterCount - beforeCount
+      if (delta !== 0) changes.push({ name: itemName, before: beforeCount, after: afterCount, delta })
+    }
+
+    return changes.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta) || a.name.localeCompare(b.name))
   }
 
   function formatItemList (items) {
@@ -115,6 +131,186 @@ function createInventoryHelpers ({ getBot, mcData, catalog, toolTier }) {
     if (items.length === 0) return null
 
     return items[0]
+  }
+
+  function resolveInventoryItemForAction (query, skill, startedAt = Date.now()) {
+    const rawQuery = String(query || '').trim()
+    if (!rawQuery) {
+      return {
+        result: actionFail(skill, 'Informe um item.', { query }, startedAt, {
+          code: 'validation_failed',
+          retryable: false
+        })
+      }
+    }
+
+    const target = normalizeItemTarget(rawQuery, 'inventory')
+    const normalizedQuery = normalizeItemName(rawQuery)
+    const matches = findInventoryItems(rawQuery)
+
+    if (matches.length === 0) {
+      return {
+        result: actionFail(skill, `Nao tenho ${rawQuery}.`, { query: rawQuery }, startedAt, {
+          code: 'item_not_found',
+          retryable: true,
+          missingRequirements: [itemRequirement(rawQuery, 1)],
+          suggestedNextActions: [
+            suggestSkillAction('containers.withdraw', { target: rawQuery, count: 1 }, 'procurar o item em containers'),
+            suggestSkillAction('collection.collect', { target: rawQuery, count: 1 }, 'coletar o recurso no mundo, se for um bloco coletavel')
+          ]
+        })
+      }
+    }
+
+    const names = Array.from(new Set(matches.map(item => item.name))).sort()
+    const exactMatch = matches.find(item => normalizeItemName(item.name) === normalizedQuery)
+    const isCatalogCategory = target.itemCategories.size > 0
+    const isCatalogItem = target.itemNames.size > 0
+    const shouldTreatAsAmbiguous = names.length > 1 && !exactMatch && !isCatalogCategory && !isCatalogItem
+
+    if (shouldTreatAsAmbiguous) {
+      return {
+        result: actionFail(skill, `Nome ambiguo: ${rawQuery}.`, { query: rawQuery, options: names.slice(0, 8) }, startedAt, {
+          code: 'ambiguous_item',
+          retryable: false
+        })
+      }
+    }
+
+    return { item: exactMatch || matches[0], matches, target }
+  }
+
+  async function equipItemAction (query, startedAt = Date.now()) {
+    const resolved = resolveInventoryItemForAction(query, 'inventory.equip', startedAt)
+    if (resolved.result) return resolved.result
+
+    try {
+      const item = resolved.item
+      const heldBefore = currentBot().heldItem?.name || null
+      if (heldBefore === item.name) {
+        return actionOk('inventory.equip', `Ja estou segurando ${item.name}.`, {
+          itemName: item.name,
+          item: formatItem(item),
+          heldBefore
+        }, startedAt, {
+          code: 'already_equipped'
+        })
+      }
+
+      await currentBot().equip(item, 'hand')
+      return actionOk('inventory.equip', `Segurando ${item.name}.`, {
+        itemName: item.name,
+        item: formatItem(item),
+        heldBefore,
+        heldAfter: item.name
+      }, startedAt, {
+        code: 'equipped'
+      })
+    } catch (error) {
+      return actionFail('inventory.equip', `Falha ao equipar ${query}: ${error.message}`, { query }, startedAt, {
+        code: 'inventory_action_failed',
+        retryable: true
+      })
+    }
+  }
+
+  async function dropItemAction (query, amount = null, startedAt = Date.now()) {
+    if (amount != null && (!Number.isInteger(Number(amount)) || Number(amount) <= 0)) {
+      return actionFail('inventory.drop', 'Quantidade invalida para dropar item.', { query, amount }, startedAt, {
+        code: 'invalid_amount',
+        retryable: false
+      })
+    }
+
+    const resolved = resolveInventoryItemForAction(query, 'inventory.drop', startedAt)
+    if (resolved.result) return resolved.result
+
+    try {
+      const item = resolved.item
+      const before = inventorySnapshot()
+      let dropped
+      let message
+
+      if (amount == null) {
+        dropped = item.count
+        await currentBot().tossStack(item)
+        message = `Dropei ${formatItem(item)}.`
+      } else {
+        const requested = Number(amount)
+        const totalAvailable = resolved.matches.reduce((sum, stack) => sum + stack.count, 0)
+        dropped = Math.min(requested, totalAvailable)
+        await currentBot().toss(item.type, item.metadata, dropped)
+        message = `Dropei ${dropped}x ${item.name}.`
+      }
+
+      const after = inventorySnapshot()
+      return actionOk('inventory.drop', message, {
+        item: item.name,
+        requestedAmount: amount,
+        dropped
+      }, startedAt, {
+        code: 'dropped',
+        worldChanged: true,
+        inventoryDelta: inventoryDeltaBetweenSnapshots(before, after)
+      })
+    } catch (error) {
+      return actionFail('inventory.drop', `Falha ao dropar ${query}: ${error.message}`, { query, amount }, startedAt, {
+        code: 'inventory_action_failed',
+        retryable: true
+      })
+    }
+  }
+
+  async function moveItemToHotbarAction (slot, query, startedAt = Date.now()) {
+    const slotNumber = Number(slot)
+    if (!Number.isInteger(slotNumber) || slotNumber < 1 || slotNumber > 9) {
+      return actionFail('inventory.hotbar', 'Slot invalido. Use 1 a 9.', { slot, query }, startedAt, {
+        code: 'invalid_slot',
+        retryable: false
+      })
+    }
+
+    const resolved = resolveInventoryItemForAction(query, 'inventory.hotbar', startedAt)
+    if (resolved.result) return resolved.result
+
+    try {
+      const item = resolved.item
+      const destinationSlot = hotbarSlotToInventorySlot(slotNumber)
+      if (item.slot === destinationSlot) {
+        return actionOk('inventory.hotbar', `${item.name} ja esta no slot ${slotNumber}.`, {
+          item: formatItem(item),
+          slot: slotNumber,
+          destinationSlot
+        }, startedAt, {
+          code: 'already_in_slot'
+        })
+      }
+
+      if (item.slot == null) {
+        return actionFail('inventory.hotbar', `Nao consegui identificar o slot de ${item.name}.`, {
+          item: formatItem(item),
+          slot: slotNumber
+        }, startedAt, {
+          code: 'inventory_action_failed',
+          retryable: true
+        })
+      }
+
+      await currentBot().moveSlotItem(item.slot, destinationSlot)
+      return actionOk('inventory.hotbar', `Coloquei ${item.name} na hotbar ${slotNumber}.`, {
+        item: formatItem(item),
+        slot: slotNumber,
+        fromSlot: item.slot,
+        destinationSlot
+      }, startedAt, {
+        code: 'moved_to_hotbar'
+      })
+    } catch (error) {
+      return actionFail('inventory.hotbar', `Falha ao mover ${query} para hotbar: ${error.message}`, { query, slot }, startedAt, {
+        code: 'inventory_action_failed',
+        retryable: true
+      })
+    }
   }
 
   function hotbarSlotToInventorySlot (slotNumber) {
@@ -194,12 +390,17 @@ function createInventoryHelpers ({ getBot, mcData, catalog, toolTier }) {
     summarizeInventory,
     inventorySnapshot,
     diffInventorySnapshots,
+    inventoryDeltaBetweenSnapshots,
     formatItemList,
     normalizeItemTarget,
     itemTargetMatchesName,
     itemTargetScore,
     findInventoryItems,
     findInventoryItem,
+    resolveInventoryItemForAction,
+    equipItemAction,
+    dropItemAction,
+    moveItemToHotbarAction,
     hotbarSlotToInventorySlot,
     describeStatus,
     describeHotbar,

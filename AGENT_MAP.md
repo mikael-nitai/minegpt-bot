@@ -280,6 +280,8 @@ Ao alterar:
 
 ## Preparacao Para Mente Em Linguagem Natural
 
+Leia tambem `docs/AI_PLANNER_READINESS.md` antes de implementar qualquer comando `bot`, API externa ou planner multi-step.
+
 O planner futuro deve consumir:
 
 ```text

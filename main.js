@@ -83,7 +83,6 @@ function createSkillState (context) {
 function setupSkillRegistry ({
   context,
   config,
-  commandSystem,
   collection,
   inventory,
   craftingHelpers,
@@ -171,8 +170,7 @@ function setupSkillRegistry ({
     plannerHints: 'Use antes de minerar, combater, comer ou colocar blocos quando a mao importa.',
     run: async ({ item }) => {
       if (!item) return actionFail('inventory.equip', 'item ausente')
-      await commandSystem.equipItemByName(item)
-      return actionOk('inventory.equip', `equipado ${item}`, { item })
+      return inventory.equipItemAction(item)
     }
   })
 
@@ -188,8 +186,7 @@ function setupSkillRegistry ({
     plannerHints: 'Use com cuidado porque remove itens do inventario e cria drop no mundo.',
     run: async ({ item, amount = null }) => {
       if (!item) return actionFail('inventory.drop', 'item ausente')
-      await commandSystem.dropItemByName(item, amount == null ? null : String(amount))
-      return actionOk('inventory.drop', `drop executado para ${item}`, { item, amount })
+      return inventory.dropItemAction(item, amount)
     }
   })
 
@@ -205,8 +202,7 @@ function setupSkillRegistry ({
     plannerHints: 'Use para preparar ferramentas, comida, tochas ou blocos antes de uma sequencia.',
     run: async ({ slot, item }) => {
       if (!slot || !item) return actionFail('inventory.hotbar', 'slot ou item ausente')
-      await commandSystem.moveItemToHotbar(String(slot), item)
-      return actionOk('inventory.hotbar', `hotbar ${slot} ${item}`, { slot, item })
+      return inventory.moveItemToHotbarAction(slot, item)
     }
   })
 

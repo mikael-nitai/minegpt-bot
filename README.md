@@ -266,6 +266,7 @@ O repositorio tambem possui GitHub Actions em `.github/workflows/ci.yml`, rodand
 - A memoria de containers ainda nao persiste entre reinicios.
 - Deposito automatico e conservador e pode preservar itens demais ate refinarmos as regras.
 - A futura camada de linguagem natural deve chamar skills registradas, nao controlar Mineflayer diretamente.
+- Antes de implementar a camada `bot`, leia `docs/AI_PLANNER_READINESS.md`.
 
 ## Licenca
 
