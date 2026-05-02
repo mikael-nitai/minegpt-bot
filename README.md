@@ -213,7 +213,7 @@ O Survival Guard monitora vida, fome, mobs, lava, fogo, magma, quedas e afogamen
 - `skills`
 - `bot COMANDO`
 
-O prefixo experimental `bot` usa providers locais em `ai/`, sem API externa. O padrao seguro e `rule_based`; `mock` continua disponivel para regressao e `ollama` fica reservado para LLM local. Exemplos:
+O prefixo experimental `bot` usa providers locais em `ai/`, sem API externa. O interpretador principal de linguagem natural e o `ollama`; `rule_based` fica reservado para fallback/debug explicito e `mock` continua disponivel para regressao. Exemplos:
 
 - `bot estado`
 - `bot vem aqui`
@@ -336,9 +336,9 @@ npm run llm:pull
 
 Perfis de execucao local:
 
-- `economia`: `num_ctx=2048`, `max_output_tokens=160`, `timeout_ms=15000`, `keep_alive=30s`.
-- `equilibrio`: perfil padrao, `num_ctx=4096`, `max_output_tokens=256`, `timeout_ms=20000`, `keep_alive=5m`.
-- `performance`: `num_ctx=8192`, `max_output_tokens=384`, `timeout_ms=30000`, `keep_alive=15m`.
+- `economia`: `num_ctx=2048`, `max_output_tokens=160`, `timeout_ms=15000`, `keep_alive=24h`.
+- `equilibrio`: perfil padrao, `num_ctx=4096`, `max_output_tokens=256`, `timeout_ms=20000`, `keep_alive=24h`.
+- `performance`: `num_ctx=8192`, `max_output_tokens=384`, `timeout_ms=30000`, `keep_alive=24h`.
 
 O projeto nao usa contexto de 128K, nao usa `max_steps > 1` por padrao e limita saida porque o planner deve retornar JSON curto. Escolha o perfil por ambiente:
 
@@ -350,19 +350,23 @@ MINEGPT_AI_PROFILE=performance npm start
 
 Alias aceitos: `economy` -> `economia`, `balanced`/`balanceado` -> `equilibrio`, `desempenho`/`perf` -> `performance`. Perfil desconhecido cai para `equilibrio`.
 
-Ative o provider local quando a integracao Ollama estiver habilitada:
+Use o provider Ollama como interpretador principal de linguagem natural:
 
 ```bash
 MINEGPT_AI_PROVIDER=ollama MINEGPT_AI_FALLBACK_PROVIDER=rule_based MINEGPT_AI_URL=http://localhost:11434 MINEGPT_AI_PROFILE=equilibrio MINEGPT_AI_MODEL=qwen2.5:14b-instruct npm start
 ```
 
-Volte para o planner local deterministico:
+Use o planner local deterministico apenas para debug ou fallback explicito:
 
 ```bash
 MINEGPT_AI_PROVIDER=rule_based npm start
 ```
 
-O provider `ollama` usa apenas o servidor local do Ollama. Ele envia estado compacto, skills seguras, historico curto e um JSON Schema para `/api/chat` com structured outputs. Se o Ollama estiver offline e `MINEGPT_AI_FALLBACK_PROVIDER=rule_based` ou `mock` estiver configurado, o bot cai para esse provider local; se nao houver fallback, ele responde erro claro e nao executa acao.
+O provider `ollama` usa apenas o servidor local do Ollama. Ele envia estado compacto, skills seguras, historico curto e um JSON Schema para `/api/chat` com structured outputs. Para comandos naturais, o bot usa sempre o provider configurado: se `MINEGPT_AI_PROVIDER=ollama`, a mensagem vai direto ao Ollama, sem pre-filtro `rule_based`. Se o Ollama estiver offline e `MINEGPT_AI_FALLBACK_PROVIDER=rule_based` ou `mock` estiver configurado, o bot cai para esse provider local e registra provider solicitado, erro, fallback usado e decisao final; se nao houver fallback, ele responde erro claro e nao executa acao.
+
+Ao iniciar com provider `ollama`, o bot dispara um warmup assíncrono do modelo. Enquanto o warmup estiver em andamento, uma falha inicial do Ollama nao cai para fallback automaticamente; o bot pede para tentar novamente em alguns segundos para evitar uma decisao divergente do `rule_based`. Por padrao, `keep_alive=24h` mantem o modelo carregado durante uma sessao longa do bot, reduzindo latencia e evitando reload depois de alguns minutos sem comandos. Para alterar isso, configure `MINEGPT_AI_KEEP_ALIVE` ou `ai.ollama.keep_alive`.
+
+Nao ha modo `hybrid` como padrao. Se um modo hibrido for criado no futuro, ele deve ser opt-in e experimental, nunca o interpretador automatico antes do Ollama.
 
 Protecoes para sessoes longas:
 
@@ -410,6 +414,18 @@ npm run llm:bench
 ```
 
 O benchmark usa um `plannerState` fake minimo, uma lista segura de skills fake baseada no `SkillRegistry`, chama apenas o provider Ollama e valida a resposta localmente. Ele nao executa skills reais, nao abre Minecraft e nao altera mundo.
+
+Para inspecionar uma mensagem especifica como se ela chegasse ao planner do chat, sem abrir Minecraft e sem executar skill real:
+
+```bash
+npm run llm:probe -- "mensagem natural do usuario"
+```
+
+O probe imprime o output bruto do modelo, a decisao parseada, a decisao normalizada, a validacao local, o comando final planejado e se a acao exigiria confirmacao. Para saida estruturada:
+
+```bash
+npm run llm:probe -- --json "guarde nas arcas tudo que for pedra e terra"
+```
 
 Para comparar perfis:
 

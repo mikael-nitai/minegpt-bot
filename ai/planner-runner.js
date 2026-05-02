@@ -2,6 +2,7 @@ const { decideNextAction } = require('./planner')
 const { validatePlannerDecision } = require('./planner-schema')
 const { skillRegistryToPlannerTools } = require('./tool-adapter')
 const { getSkillsCacheTtlMs } = require('./planner-limits')
+const { normalizePlannerDecisionArgs } = require('./providers/provider-utils')
 
 const DEFAULT_ALLOWED_RISKS = ['low', 'medium']
 const DEFAULT_MAX_STEPS = 1
@@ -354,7 +355,7 @@ async function runPlannerCycles ({
 
   for (let step = 1; step <= stepLimit; step++) {
     const plannerState = safePlannerState(safeContext)
-    const decision = await decide({
+    const rawDecision = await decide({
       userMessage,
       plannerState,
       skills,
@@ -362,6 +363,7 @@ async function runPlannerCycles ({
       config: safeContext.config || {},
       signal
     })
+    const decision = normalizePlannerDecisionArgs(rawDecision, skills)
     latestDecision = decision
 
     const validation = validatePlannerDecision(decision, { skills })
@@ -380,12 +382,6 @@ async function runPlannerCycles ({
       const reason = decision.reasonSummary || 'planner recusou o pedido'
       runHistory.push({ step, decision: compactDecision(decision), status: 'refused', reason })
       return stopRun({ status: 'refused', reason, steps: step, history: runHistory, decision })
-    }
-
-    if (decision.intent === 'stop') {
-      const reason = decision.reasonSummary || 'planner decidiu parar'
-      runHistory.push({ step, decision: compactDecision(decision), status: 'stopped', reason })
-      return stopRun({ status: 'stopped', reason, steps: step, history: runHistory, decision, ok: true })
     }
 
     const nextAction = decision.nextAction

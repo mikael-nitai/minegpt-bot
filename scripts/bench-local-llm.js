@@ -2,6 +2,7 @@ const { performance } = require('perf_hooks')
 const { TextDecoder } = require('util')
 const { getLocalLlmProfile } = require('../ai/local-llm-profiles')
 const { plannerDecisionJsonSchema, validatePlannerDecision } = require('../ai/planner-schema')
+const { normalizePlannerDecisionArgs } = require('../ai/providers/provider-utils')
 const {
   buildSystemPrompt,
   buildUserPrompt,
@@ -21,6 +22,8 @@ const SCENARIOS = [
   'faz tochas',
   'procura carvao no bau',
   'guarda blocos',
+  'guarda recursos',
+  'guarda tudo',
   'pega madeira e faz uma crafting table'
 ]
 
@@ -66,7 +69,7 @@ const BENCH_SKILLS = [
       additionalProperties: false
     },
     risk: 'medium',
-    plannerHints: 'Use para madeira, pedra, carvao e outros blocos. Extraia count quando houver numero.'
+    plannerHints: 'Use target como bloco concreto listado em plannerState.allowedActions.collectTargets. Use collectCategories apenas para entender a intencao; nao envie categoria como target. Nao invente nomes como oak_tree. Extraia count quando houver numero.'
   },
   {
     id: 'crafting.craft_item',
@@ -111,14 +114,14 @@ const BENCH_SKILLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        category: { type: 'string' },
-        item: { type: 'string' },
-        all: { type: 'boolean' }
+        mode: { type: 'string', enum: ['target', 'all', 'resources', 'blocks', 'drops'] },
+        target: { type: 'string' },
+        count: { type: 'integer', minimum: 1, maximum: 64 }
       },
       additionalProperties: false
     },
     risk: 'medium',
-    plannerHints: 'Use para guardar blocos, recursos, drops ou tudo.'
+    plannerHints: 'Use mode explicito. Exemplos: "guarda blocos" -> {"mode":"blocks"}; "guarda recursos" -> {"mode":"resources"}; "guarda drops" -> {"mode":"drops"}; "guarda tudo" -> {"mode":"all"}; "guarda carvao" -> {"mode":"target","target":"coal"}.'
   }
 ]
 
@@ -176,6 +179,10 @@ function fakePlannerState () {
         { type: 'chest', distance: 3, knownItems: ['coal', 'cobblestone'] }
       ]
     },
+    allowedActions: {
+      collectTargets: ['oak_log', 'stone', 'coal_ore'],
+      collectCategories: ['wood', 'stone', 'ore']
+    },
     survival: {
       risk: 'low',
       reasons: []
@@ -201,7 +208,10 @@ function expectedHintsForScenario (scenario) {
   if (text.includes('tochas')) return { skills: ['crafting.craft_item'], targets: ['torch', 'tocha'] }
   if (text.includes('crafting table')) return { skills: ['crafting.craft_item'], targets: ['crafting_table', 'crafting table', 'mesa_de_trabalho'] }
   if (text.includes('carvao')) return { skills: ['containers.find_item'], targets: ['coal', 'carvao'] }
-  if (text.includes('guarda')) return { skills: ['containers.deposit'], targets: ['blocks', 'blocos'] }
+  if (text.includes('guarda') && text.includes('recursos')) return { skills: ['containers.deposit'], args: { mode: 'resources' } }
+  if (text.includes('guarda') && text.includes('tudo')) return { skills: ['containers.deposit'], args: { mode: 'all' } }
+  if (text.includes('guarda') && text.includes('drops')) return { skills: ['containers.deposit'], args: { mode: 'drops' } }
+  if (text.includes('guarda')) return { skills: ['containers.deposit'], args: { mode: 'blocks' } }
   return { skills: [] }
 }
 
@@ -223,6 +233,14 @@ function checkArgumentCoherence (scenario, decision) {
 
   if (hints.targets?.length && !hints.targets.some(target => argsText.includes(target))) {
     errors.push(`args sem alvo esperado: ${hints.targets.join(' ou ')}`)
+  }
+
+  if (hints.args) {
+    for (const [field, expected] of Object.entries(hints.args)) {
+      if (decision.nextAction?.args?.[field] !== expected) {
+        errors.push(`args.${field} esperado: ${expected}`)
+      }
+    }
   }
 
   if (hints.count && !argsText.includes(String(hints.count))) {
@@ -380,8 +398,9 @@ async function checkOllamaReady ({ profile, fetch }) {
   return { ok: true, selectedModel, available }
 }
 
-async function runScenario ({ scenario, profile, schema, skills }) {
+async function runScenario ({ scenario, profile, skills }) {
   const plannerState = fakePlannerState()
+  const schema = plannerDecisionJsonSchema(skills, { plannerState })
   const payload = buildPlannerPromptPayload({
     userMessage: scenario,
     plannerState,
@@ -426,7 +445,7 @@ async function runScenario ({ scenario, profile, schema, skills }) {
 
   let decision
   try {
-    decision = parseStrictJsonObject(rawContent)
+    decision = normalizePlannerDecisionArgs(parseStrictJsonObject(rawContent), skills)
   } catch (error) {
     return {
       scenario,
@@ -443,7 +462,7 @@ async function runScenario ({ scenario, profile, schema, skills }) {
     }
   }
 
-  const validation = validatePlannerDecision(decision, { skills })
+  const validation = validatePlannerDecision(decision, { skills, plannerState })
   const skillExists = decision.intent !== 'execute_skill' || skills.some(skill => skill.id === decision.nextAction?.skill)
   const coherence = checkArgumentCoherence(scenario, decision)
 
@@ -459,6 +478,7 @@ async function runScenario ({ scenario, profile, schema, skills }) {
     timings,
     skill: decision.nextAction?.skill || null,
     args: decision.nextAction?.args || null,
+    nextAction: decision.nextAction || null,
     intent: decision.intent,
     errors: [
       ...validation.errors,
@@ -518,18 +538,18 @@ async function benchLocalLlm () {
 
   profile.model = ready.selectedModel
   const skills = BENCH_SKILLS
-  const schema = plannerDecisionJsonSchema(skills)
   console.log(`Modelo usado: ${profile.model}`)
   console.log(`Cenarios: ${SCENARIOS.length}`)
   console.log('')
 
   const results = []
   for (const scenario of SCENARIOS) {
-    const result = await runScenario({ scenario, profile, schema, skills })
+    const result = await runScenario({ scenario, profile, skills })
     results.push(result)
     const status = result.ok ? 'ok' : 'falha'
     const detail = result.error || result.errors?.join('; ') || `${result.intent}${result.skill ? ` -> ${result.skill}` : ''}`
-    console.log(`- ${scenario}: ${status} | ${formatMs(result.totalMs)} | ${detail}`)
+    const actionText = result.jsonValid ? ` | nextAction=${JSON.stringify(result.nextAction || null)}` : ''
+    console.log(`- ${scenario}: ${status} | ${formatMs(result.totalMs)} | ${detail}${actionText}`)
   }
 
   const summary = summarize(results)
@@ -551,7 +571,8 @@ async function benchLocalLlm () {
     console.log('')
     console.log('Erros por cenario')
     for (const failure of failures) {
-      console.log(`- ${failure.scenario}: ${failure.error || failure.errors?.join('; ') || 'falha sem detalhe'}`)
+      const actionText = failure.nextAction ? ` | nextAction=${JSON.stringify(failure.nextAction)}` : ''
+      console.log(`- ${failure.scenario}: ${failure.error || failure.errors?.join('; ') || 'falha sem detalhe'}${actionText}`)
     }
   }
 

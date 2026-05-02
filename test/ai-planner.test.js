@@ -171,9 +171,9 @@ test('planner mockado pergunta quando nao entende ou skill nao esta disponivel',
   assert.match(empty.askUser, /O que voce quer/)
 })
 
-test('provider resolver usa rule_based como padrao e aceita env/config', () => {
-  assert.equal(DEFAULT_PROVIDER, 'rule_based')
-  assert.equal(getPlannerProvider({}, {}).name, 'rule_based')
+test('provider resolver usa ollama como padrao e aceita env/config', () => {
+  assert.equal(DEFAULT_PROVIDER, 'ollama')
+  assert.equal(getPlannerProvider({}, {}).name, 'ollama')
   assert.equal(getPlannerProvider({ ai: { provider: 'mock' } }, {}).name, 'mock')
   assert.equal(getPlannerProvider({ ai: { provider: 'mock' } }, { MINEGPT_AI_PROVIDER: 'ollama' }).name, 'ollama')
 })
@@ -193,6 +193,7 @@ test('perfis locais usam equilibrio como padrao e limites seguros', () => {
   assert.equal(profile.maxOutputTokens, 256)
   assert.equal(profile.timeoutMs, 20000)
   assert.equal(profile.maxSteps, 1)
+  assert.equal(profile.keepAlive, '24h')
 })
 
 test('perfis locais aceitam aliases e perfil invalido cai para equilibrio', () => {
@@ -415,13 +416,75 @@ test('schema rejeita skill inexistente e nextAction invalido', () => {
   const invalidArgsResult = validatePlannerDecision(invalidArgs, { skills })
   assert.equal(invalidArgsResult.ok, false)
   assert.match(invalidArgsResult.errors.join('; '), /args deve ser objeto/)
+
+  const invalidStopIntent = makePlannerDecision({
+    intent: 'stop',
+    userGoal: 'para',
+    nextAction: null,
+    reasonSummary: 'parar',
+    risk: 'low',
+    confidence: 0.8,
+    stopAfterThis: true
+  })
+  const invalidStopResult = validatePlannerDecision(invalidStopIntent, { skills })
+  assert.equal(invalidStopResult.ok, false)
+  assert.match(invalidStopResult.errors.join('; '), /intent invalida/)
+
+  const invalidCollectTarget = makePlannerDecision({
+    intent: 'execute_skill',
+    userGoal: 'coletar madeira',
+    nextAction: { skill: 'collection.collect', args: { target: 'oak_tree', count: 1 } },
+    reasonSummary: 'coletar madeira',
+    confidence: 0.8
+  })
+  const invalidCollectResult = validatePlannerDecision(invalidCollectTarget, {
+    skills,
+    plannerState: { allowedActions: { collectTargets: ['oak_log'], collectCategories: ['wood'] } }
+  })
+  assert.equal(invalidCollectResult.ok, false)
+  assert.match(invalidCollectResult.errors.join('; '), /collection\.collect\.target fora do vocabulario permitido: oak_tree/)
+
+  const categoryAsTarget = makePlannerDecision({
+    intent: 'execute_skill',
+    userGoal: 'coletar madeira',
+    nextAction: { skill: 'collection.collect', args: { target: 'wood', count: 1 } },
+    reasonSummary: 'coletar madeira',
+    confidence: 0.8
+  })
+  const categoryTargetResult = validatePlannerDecision(categoryAsTarget, {
+    skills,
+    plannerState: { allowedActions: { collectTargets: ['oak_log'], collectCategories: ['wood'] } }
+  })
+  assert.equal(categoryTargetResult.ok, false)
+  assert.match(categoryTargetResult.errors.join('; '), /collection\.collect\.target fora do vocabulario permitido: wood/)
+
+  const pollutedDeposit = makePlannerDecision({
+    intent: 'execute_skill',
+    userGoal: 'guardar blocos',
+    nextAction: { skill: 'containers.deposit', args: { mode: 'blocks', target: '>block', count: 16 } },
+    reasonSummary: 'guardar blocos',
+    confidence: 0.8
+  })
+  const pollutedDepositResult = validatePlannerDecision(pollutedDeposit, { skills })
+  assert.equal(pollutedDepositResult.ok, false)
+  assert.match(pollutedDepositResult.errors.join('; '), /target nao permitido/)
+  assert.match(pollutedDepositResult.errors.join('; '), /count nao permitido/)
 })
 
 test('schema de planner decision expoe JSON Schema com skills registradas', () => {
-  const schema = plannerDecisionJsonSchema(plannerTools())
+  const schema = plannerDecisionJsonSchema(plannerTools(), {
+    plannerState: { allowedActions: { collectTargets: ['oak_log'], collectCategories: ['wood'] } }
+  })
   assert.equal(schema.type, 'object')
-  assert.deepEqual(schema.properties.intent.enum, ['execute_skill', 'ask_user', 'refuse', 'stop'])
-  assert(schema.properties.nextAction.anyOf[1].properties.skill.enum.includes('movement.stop'))
+  assert.deepEqual(schema.properties.intent.enum, ['execute_skill', 'ask_user', 'refuse'])
+  const actionSchema = schema.properties.nextAction.anyOf[1]
+  assert(Array.isArray(actionSchema.oneOf))
+  assert(actionSchema.oneOf.some(entry => entry.properties.skill.enum.includes('movement.stop')))
+  const collectSchema = actionSchema.oneOf.find(entry => entry.properties.skill.enum.includes('collection.collect'))
+  assert.deepEqual(collectSchema.properties.args.properties.target.enum, ['oak_log'])
+  const depositSchema = actionSchema.oneOf.find(entry => entry.properties.skill.enum.includes('containers.deposit'))
+  assert.deepEqual(depositSchema.properties.args.oneOf[0].properties.mode.enum, ['all', 'resources', 'blocks', 'drops'])
+  assert.deepEqual(depositSchema.properties.args.oneOf[1].properties.mode.enum, ['target'])
 })
 
 test('ollama provider aceita decisao valida usando fetch mockado', async () => {
@@ -465,6 +528,117 @@ test('ollama provider aceita decisao valida usando fetch mockado', async () => {
   assert.equal(calls[0].body.options.num_predict, 160)
   assert.equal(calls[0].body.format.type, 'object')
   assert(calls[0].body.messages[1].content.includes('Estado JSON'))
+})
+
+test('provider ollama interpreta frases naturais sem pre-filtro rule_based', async () => {
+  const calls = []
+  const fakeFetch = async (url, options) => {
+    calls.push({ url, body: JSON.parse(options.body) })
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        message: {
+          content: JSON.stringify(makePlannerDecision({
+            intent: 'execute_skill',
+            userGoal: 'teste',
+            nextAction: { skill: 'movement.come_here', args: {} },
+            reasonSummary: 'Teste via Ollama.',
+            risk: 'low',
+            confidence: 0.9,
+            stopAfterThis: true
+          }))
+        }
+      })
+    }
+  }
+
+  for (const userMessage of ['caminhe 5 blocos para frente', 'quebre tronco de árvore de carvalho']) {
+    const decision = await decideNextAction({
+      userMessage,
+      plannerState: { online: true },
+      skills: plannerTools(),
+      config: { ai: { provider: 'ollama' } },
+      fetch: fakeFetch
+    })
+
+    assert.equal(decision.intent, 'execute_skill', userMessage)
+    assert.equal(decision.planner.mode, 'ollama', userMessage)
+  }
+
+  assert.equal(calls.length, 2)
+  assert(calls.every(call => String(call.url).includes('/api/chat')))
+  assert(calls.some(call => call.body.messages[1].content.includes('caminhe 5 blocos para frente')))
+  assert(calls.some(call => call.body.messages[1].content.includes('quebre tronco de árvore de carvalho')))
+})
+
+test('bot llm continua diagnostico leve sem chamar geracao do LLM', async () => {
+  const calls = []
+  const response = await runPlannerCommand({
+    userMessage: 'llm',
+    context: { config: { ai: { provider: 'ollama' } } },
+    survivalGuard: { assess: () => ({ severity: 'low' }) },
+    diagnosticFetch: async (url) => {
+      calls.push(String(url))
+      return { ok: true, status: 200, json: async () => ({ models: [] }) }
+    }
+  })
+
+  assert.equal(response.status, 'llm_diagnostic')
+  assert.match(response.chat, /provider=ollama/)
+  assert.equal(calls.length, 1)
+  assert(calls[0].includes('/api/tags'))
+})
+
+test('bot plano usa provider ativo para linguagem natural', async () => {
+  const calls = []
+  const registry = createSkillRegistry({ defaultContext: { bot: {}, stateReporter: {} } })
+  registry.register({
+    id: 'movement.come_here',
+    description: 'aproximar',
+    risk: 'low',
+    run: () => actionOk('movement.come_here', 'ok')
+  })
+
+  const response = await runPlannerCommand({
+    userMessage: 'plano caminhe 5 blocos para frente',
+    context: {
+      skillRegistry: registry,
+      stateReporter: { getPlannerSnapshot: () => ({ online: true }) },
+      activeSkill: null,
+      config: { ai: { provider: 'ollama' } }
+    },
+    survivalGuard: { assess: () => ({ severity: 'low' }) },
+    decide: args => decideNextAction({
+      ...args,
+      fetch: async (url, options) => {
+        calls.push({ url: String(url), body: JSON.parse(options.body) })
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            message: {
+              content: JSON.stringify(makePlannerDecision({
+                intent: 'execute_skill',
+                userGoal: 'caminhe 5 blocos para frente',
+                nextAction: { skill: 'movement.come_here', args: {} },
+                reasonSummary: 'Teste via Ollama.',
+                risk: 'low',
+                confidence: 0.9,
+                stopAfterThis: true
+              }))
+            }
+          })
+        }
+      }
+    })
+  })
+
+  assert.equal(response.status, 'dry_run')
+  assert.match(response.chat, /Nada foi executado/)
+  assert.equal(calls.length, 1)
+  assert(calls[0].url.includes('/api/chat'))
+  assert(calls[0].body.messages[1].content.includes('caminhe 5 blocos para frente'))
 })
 
 test('payload do planner para LLM e JSON serializavel e remove funcoes', () => {
@@ -706,7 +880,9 @@ test('ollama JSON invalido repetido cai para fallback configurado', async () => 
   assert.equal(decision.intent, 'execute_skill')
   assert.equal(decision.nextAction.skill, 'state.snapshot')
   assert.equal(decision.planner.mode, 'rule_based')
-  assert.match(decision.planner.providerFallback, /ollama falhou/)
+  assert.match(decision.planner.providerFallback, /provider=ollama/)
+  assert.match(decision.planner.providerFallback, /fallback=rule_based/)
+  assert.match(decision.planner.providerFallback, /decisao_final=rule_based/)
   assert.equal(calls, 2)
 })
 
@@ -753,7 +929,33 @@ test('ollama offline cai para fallback configurado', async () => {
   assert.equal(decision.intent, 'execute_skill')
   assert.equal(decision.nextAction.skill, 'state.snapshot')
   assert.equal(decision.planner.mode, 'rule_based')
-  assert.match(decision.planner.providerFallback, /ollama falhou/)
+  assert.match(decision.planner.providerFallback, /provider=ollama/)
+  assert.match(decision.planner.providerFallback, /fallback=rule_based/)
+  assert.match(decision.planner.providerFallback, /decisao_final=rule_based/)
+})
+
+test('ollama em warmup nao cai para fallback rule_based', async () => {
+  const decision = await decideNextAction({
+    userMessage: 'estado',
+    plannerState: { online: true },
+    skills: plannerTools(),
+    config: {
+      ai: {
+        provider: 'ollama',
+        fallbackProvider: 'rule_based',
+        ollamaRuntime: { status: 'warming', startedAt: 1000 }
+      }
+    },
+    fetch: async () => {
+      throw new Error('model loading')
+    }
+  })
+
+  assert.equal(decision.intent, 'ask_user')
+  assert.equal(decision.planner.mode, 'ollama')
+  assert.match(decision.askUser, /aquecendo/)
+  assert.match(decision.reasonSummary, /warmup/)
+  assert.match(decision.planner.providerFallback, /fallback=nenhum/)
 })
 
 test('rate limit local limita chamadas ao Ollama por minuto sem cair para fallback', async () => {
@@ -875,7 +1077,14 @@ test('tool adapter remove funcoes e contexto interno das skills', () => {
   assert.deepEqual(tools, [{
     id: 'demo.skill',
     description: 'demo',
-    inputSchema: { target: 'string' },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: { type: 'string' }
+      },
+      required: ['target'],
+      additionalProperties: false
+    },
     risk: 'medium',
     effects: ['inventory'],
     cost: { base: 2 },
@@ -887,6 +1096,31 @@ test('tool adapter remove funcoes e contexto interno das skills', () => {
   assert.equal(fromList[0].id, 'x')
   assert.equal('run' in fromList[0], false)
   assert.equal('context' in fromList[0], false)
+  assert.deepEqual(fromList[0].inputSchema, {
+    type: 'object',
+    properties: {},
+    additionalProperties: false
+  })
+})
+
+test('tool adapter envia schemas claros com enums explicitos', () => {
+  const tools = skillsToPlannerTools([{
+    id: 'containers.deposit',
+    description: 'guardar',
+    inputSchema: { mode: 'target|all|resources|blocks|drops', target: 'string optional', count: 'number optional max 64' },
+    risk: 'medium'
+  }])
+
+  assert.deepEqual(tools[0].inputSchema, {
+    type: 'object',
+    properties: {
+      mode: { type: 'string', enum: ['target', 'all', 'resources', 'blocks', 'drops'] },
+      target: { type: 'string' },
+      count: { type: 'number', maximum: 64 }
+    },
+    required: ['mode'],
+    additionalProperties: false
+  })
 })
 
 test('parser do prefixo bot aceita somente comando oficial', () => {
@@ -899,6 +1133,185 @@ test('parser do prefixo bot aceita somente comando oficial', () => {
   assert.deepEqual(parsePlannerControlCommand('para'), { kind: 'stop' })
   assert.deepEqual(parsePlannerControlCommand('confirmar'), { kind: 'confirm' })
   assert.deepEqual(parsePlannerControlCommand('cancelar'), { kind: 'cancel' })
+})
+
+test('runner normaliza movement.stop removendo argumentos extras antes do plan', async () => {
+  const plannedArgs = []
+  const registry = createSkillRegistry({ defaultContext: { bot: {}, stateReporter: {} } })
+  registry.register({
+    id: 'movement.stop',
+    description: 'parar',
+    inputSchema: {},
+    risk: 'low',
+    run: () => actionOk('movement.stop', 'parado')
+  })
+  const originalPlan = registry.plan
+  registry.plan = async (skill, args, context) => {
+    plannedArgs.push(args)
+    return originalPlan(skill, args, context)
+  }
+
+  const response = await runPlannerCycles({
+    userMessage: 'para',
+    context: {
+      skillRegistry: registry,
+      stateReporter: { getPlannerSnapshot: () => ({ online: true }) },
+      activeSkill: { name: 'coletar' }
+    },
+    survivalGuard: { assess: () => ({ severity: 'low' }) },
+    dryRun: true,
+    decide: async () => plannerExecuteDecision('movement.stop', { target: 'stop', mode: 'stop' })
+  })
+
+  assert.equal(response.status, 'dry_run')
+  assert.deepEqual(plannedArgs[0], {})
+  assert.deepEqual(response.decision.nextAction.args, {})
+})
+
+test('runner rejeita alvo coletavel sintetico fora do vocabulario', async () => {
+  const registry = createSkillRegistry()
+  registry.register({
+    id: 'collection.collect',
+    description: 'coletar',
+    inputSchema: { target: 'string', count: 'number optional' },
+    risk: 'medium',
+    preconditions: [
+      ({ target }) => target === 'oak_log'
+        ? null
+        : { ok: false, reason: `alvo coletavel desconhecido: ${target}` }
+    ],
+    run: () => actionOk('collection.collect', 'coletado')
+  })
+
+  const response = await runPlannerCycles({
+    userMessage: 'pega madeira',
+    context: {
+      skillRegistry: registry,
+      stateReporter: { getPlannerSnapshot: () => ({ online: true }) },
+      activeSkill: null
+    },
+    survivalGuard: { assess: () => ({ severity: 'low' }) },
+    dryRun: true,
+    decide: async () => plannerExecuteDecision('collection.collect', { target: 'oak_tree', count: 1 }, { risk: 'medium' })
+  })
+
+  assert.equal(response.status, 'plan_failed')
+  assert.deepEqual(response.decision.nextAction.args, { target: 'oak_tree', count: 1 })
+  assert.match(response.reason, /alvo coletavel desconhecido: oak_tree/)
+})
+
+test('runner normaliza aliases de deposito antes do plan sem esconder skill invalida', async () => {
+  const cases = [
+    ['guarda blocos', { category: 'blocos' }, { mode: 'blocks' }],
+    ['guarda recursos', { mode: 'recursos' }, { mode: 'resources' }],
+    ['guarda drops', { target: 'drops' }, { mode: 'drops' }]
+  ]
+
+  for (const [userMessage, llmArgs, expectedArgs] of cases) {
+    const plannedArgs = []
+    const registry = createSkillRegistry()
+    registry.register({
+      id: 'containers.deposit',
+      description: 'guardar',
+      inputSchema: { mode: 'target|all|resources|blocks|drops', target: 'string optional', count: 'number optional' },
+      risk: 'medium',
+      run: () => actionOk('containers.deposit', 'guardado')
+    })
+    const originalPlan = registry.plan
+    registry.plan = async (skill, args, context) => {
+      plannedArgs.push(args)
+      return originalPlan(skill, args, context)
+    }
+
+    const response = await runPlannerCycles({
+      userMessage,
+      context: {
+        skillRegistry: registry,
+        stateReporter: { getPlannerSnapshot: () => ({ online: true }) },
+        activeSkill: null
+      },
+      survivalGuard: { assess: () => ({ severity: 'low' }) },
+      dryRun: true,
+      decide: async () => plannerExecuteDecision('containers.deposit', llmArgs)
+    })
+
+    assert.equal(response.status, 'dry_run', userMessage)
+    assert.deepEqual(plannedArgs[0], expectedArgs, userMessage)
+    assert.deepEqual(response.decision.nextAction.args, expectedArgs, userMessage)
+  }
+
+  const pollutedArgs = []
+  const registry = createSkillRegistry()
+  registry.register({
+    id: 'containers.deposit',
+    description: 'guardar',
+    inputSchema: { mode: 'target|all|resources|blocks|drops', target: 'string optional', count: 'number optional' },
+    risk: 'medium',
+    run: () => actionOk('containers.deposit', 'guardado')
+  })
+  const originalPlan = registry.plan
+  registry.plan = async (skill, args, context) => {
+    pollutedArgs.push(args)
+    return originalPlan(skill, args, context)
+  }
+
+  const pollutedResponse = await runPlannerCycles({
+    userMessage: 'guarda blocos',
+    context: {
+      skillRegistry: registry,
+      stateReporter: { getPlannerSnapshot: () => ({ online: true }) },
+      activeSkill: null
+    },
+    survivalGuard: { assess: () => ({ severity: 'low' }) },
+    dryRun: true,
+    decide: async () => plannerExecuteDecision('containers.deposit', { mode: 'blocks', target: '>block', count: 16 })
+  })
+
+  assert.equal(pollutedResponse.status, 'dry_run')
+  assert.deepEqual(pollutedArgs[0], { mode: 'blocks' })
+  assert.deepEqual(pollutedResponse.decision.nextAction.args, { mode: 'blocks' })
+
+  const invalidSkill = await runPlannerCycles({
+    userMessage: 'guarda blocos',
+    context: {
+      skillRegistry: createSkillRegistry(),
+      stateReporter: { getPlannerSnapshot: () => ({ online: true }) },
+      activeSkill: null
+    },
+    survivalGuard: { assess: () => ({ severity: 'low' }) },
+    dryRun: true,
+    decide: async () => plannerExecuteDecision('missing.skill', { category: 'blocos' })
+  })
+
+  assert.equal(invalidSkill.status, 'unknown_skill')
+  assert.match(invalidSkill.reason, /skill inexistente/)
+})
+
+test('guarda tudo normalizado continua exigindo confirmacao sensivel', async () => {
+  const registry = createSkillRegistry()
+  registry.register({
+    id: 'containers.deposit',
+    description: 'guardar',
+    inputSchema: { mode: 'target|all|resources|blocks|drops' },
+    risk: 'medium',
+    run: () => actionOk('containers.deposit', 'guardado')
+  })
+
+  const response = await runPlannerCycles({
+    userMessage: 'guarda tudo',
+    context: {
+      skillRegistry: registry,
+      stateReporter: { getPlannerSnapshot: () => ({ online: true }) },
+      activeSkill: null
+    },
+    survivalGuard: { assess: () => ({ severity: 'low' }) },
+    requireConfirmation: true,
+    decide: async () => plannerExecuteDecision('containers.deposit', { category: 'tudo' })
+  })
+
+  assert.equal(response.status, 'confirmation_required')
+  assert.deepEqual(response.decision.nextAction.args, { mode: 'all' })
+  assert.match(response.reason, /pode mexer em muitos itens/)
 })
 
 test('executor do planner chama plan antes de execute e responde resultado curto', async () => {

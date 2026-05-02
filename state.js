@@ -124,6 +124,33 @@ function createStateReporter ({
     }
   }
 
+  function collectAllowedActions (tokens) {
+    const collectTargets = new Set()
+    const collectCategories = new Set()
+
+    for (const token of tokens) {
+      if (!token || (token.kind !== 'block' && token.kind !== 'block_group')) continue
+      if (token.category === 'liquid_pool' || token.category === 'hazard_group') continue
+
+      for (const blockName of token.blockNames || []) {
+        if (typeof blockName === 'string' && blockName) collectTargets.add(blockName)
+      }
+
+      if (typeof token.name === 'string' && token.name && !/^arvore_/.test(token.name)) {
+        collectTargets.add(token.name)
+      }
+
+      if (token.category === 'tree') collectCategories.add('wood')
+      if (token.category === 'ore_vein') collectCategories.add('ore')
+      if (token.category === 'stone_group') collectCategories.add('stone')
+    }
+
+    return {
+      collectTargets: [...collectTargets].sort().slice(0, 24),
+      collectCategories: [...collectCategories].sort().slice(0, 12)
+    }
+  }
+
   function getPlannerSnapshot () {
     const bot = getBot()
     const activeSkill = getActiveSkill()?.name || null
@@ -148,6 +175,7 @@ function createStateReporter ({
     const drops = tokens.filter(token => token.kind === 'drop' || token.kind === 'dropped_item' || /drop|item/.test(token.category || ''))
     const containerTokens = tokens.filter(token => token.kind === 'container' || /container|chest|barrel|shulker/.test(token.category || ''))
     const inventoryItems = compactInventoryObjects(24)
+    const allowedActions = collectAllowedActions(tokens)
     const timestamp = Date.now()
 
     return {
@@ -196,6 +224,7 @@ function createStateReporter ({
         summary: getNavigationController()?.describe() || 'sem navigation controller'
       },
       containers: compactContainers(containerState, containerTokens),
+      allowedActions,
       recentCollections: collectionState.recent.slice(0, 3)
     }
   }

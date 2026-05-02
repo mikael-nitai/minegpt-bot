@@ -18,6 +18,7 @@
     "llm:check": "node scripts/check-local-llm.js",
     "llm:setup": "node scripts/setup-local-llm.js",
     "llm:pull": "node scripts/setup-local-llm.js --pull-only",
+    "llm:probe": "node scripts/probe-local-llm.js",
     "llm:bench": "node scripts/bench-local-llm.js",
     "llm:bench:economia": "MINEGPT_AI_PROFILE=economia node scripts/bench-local-llm.js",
     "llm:bench:equilibrio": "MINEGPT_AI_PROFILE=equilibrio node scripts/bench-local-llm.js",

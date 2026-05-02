@@ -97,6 +97,70 @@ function firstPositiveInteger (text) {
   return match ? Number(match[1]) : null
 }
 
+function normalizeAlias (value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase()
+}
+
+function normalizeDepositModeAlias (value) {
+  const normalized = normalizeAlias(value)
+  if (!normalized) return null
+  if (['blocks', 'block', 'blocos', 'bloco'].includes(normalized)) return 'blocks'
+  if (['resources', 'resource', 'recursos', 'recurso'].includes(normalized)) return 'resources'
+  if (['drops', 'drop'].includes(normalized)) return 'drops'
+  if (['all', 'tudo', 'todos', 'todo'].includes(normalized)) return 'all'
+  return null
+}
+
+function normalizePlannerActionArgs (action, skills = []) {
+  if (!action || typeof action !== 'object' || typeof action.skill !== 'string') return action
+  if (action.args != null && (typeof action.args !== 'object' || Array.isArray(action.args))) return action
+
+  const skillKnown = skills.length === 0 || skillExists(skills, action.skill)
+  if (!skillKnown) return action
+
+  if (action.skill === 'movement.stop') {
+    return { ...action, args: {} }
+  }
+
+  if (action.skill !== 'containers.deposit') {
+    return { ...action, args: action.args || {} }
+  }
+
+  const args = { ...(action.args || {}) }
+  const modeAlias = normalizeDepositModeAlias(args.mode) ||
+    normalizeDepositModeAlias(args.category) ||
+    (args.all === true ? 'all' : null) ||
+    normalizeDepositModeAlias(args.target) ||
+    normalizeDepositModeAlias(args.item)
+
+  if (modeAlias) {
+    args.mode = modeAlias
+    delete args.category
+    delete args.all
+    if (normalizeDepositModeAlias(args.target) === modeAlias) delete args.target
+    if (normalizeDepositModeAlias(args.item) === modeAlias) delete args.item
+    if (modeAlias !== 'target') {
+      delete args.target
+      delete args.item
+      delete args.count
+    }
+  }
+
+  return { ...action, args }
+}
+
+function normalizePlannerDecisionArgs (decision, skills = []) {
+  if (!decision || decision.intent !== 'execute_skill') return decision
+  return {
+    ...decision,
+    nextAction: normalizePlannerActionArgs(decision.nextAction, skills)
+  }
+}
+
 module.exports = {
   normalizeText,
   hasAny,
@@ -105,5 +169,8 @@ module.exports = {
   askUserDecision,
   validateOrAsk,
   requireSkillOrAsk,
-  firstPositiveInteger
+  firstPositiveInteger,
+  normalizeDepositModeAlias,
+  normalizePlannerActionArgs,
+  normalizePlannerDecisionArgs
 }

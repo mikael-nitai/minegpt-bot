@@ -679,6 +679,7 @@ function createPerceptionHelpers ({
 
   function normalizeCollectTarget (query) {
     const resolution = resolveCatalogQuery(query, 'collect')
+    const normalized = resolution.raw
     const blockNames = new Set()
     const blockCategories = new Set()
     const blockScores = new Map()
@@ -690,6 +691,10 @@ function createPerceptionHelpers ({
       } else if (candidate.kind === 'block_category') {
         blockCategories.add(candidate.name)
       }
+    }
+
+    if (catalog.blockCategories[normalized]) {
+      blockCategories.add(normalized)
     }
 
     return {

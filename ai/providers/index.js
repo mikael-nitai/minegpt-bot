@@ -2,7 +2,7 @@ const mockProvider = require('./mock-provider')
 const ruleBasedProvider = require('./rule-based-provider')
 const ollamaProvider = require('./ollama-provider')
 
-const DEFAULT_PROVIDER = 'rule_based'
+const DEFAULT_PROVIDER = 'ollama'
 const PROVIDERS = {
   mock: mockProvider,
   rule_based: ruleBasedProvider,

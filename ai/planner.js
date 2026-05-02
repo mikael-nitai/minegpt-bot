@@ -6,6 +6,18 @@ function shortErrorMessage (error) {
   return String(error?.message || error || 'erro desconhecido').slice(0, 180)
 }
 
+function providerFailureMeta ({ providerName, error, fallbackProviderName = null, finalProviderName = null }) {
+  const errorMessage = shortErrorMessage(error)
+  return fallbackProviderName
+    ? `provider=${providerName}; erro=${errorMessage}; fallback=${fallbackProviderName}; decisao_final=${finalProviderName || fallbackProviderName}`
+    : `provider=${providerName}; erro=${errorMessage}; fallback=nenhum; decisao_final=ask_user`
+}
+
+function ollamaWarmupInProgress (config = {}) {
+  const runtime = config.ai?.ollamaRuntime
+  return runtime?.status === 'warming'
+}
+
 async function decideNextAction ({
   userMessage,
   plannerState = {},
@@ -66,14 +78,37 @@ async function decideNextAction ({
       })
     }
 
+    if (provider.name === 'ollama' && ollamaWarmupInProgress(config)) {
+      const warmupDecision = askUserDecision(
+        userGoal,
+        `O modelo local ainda esta aquecendo (${shortErrorMessage(error)}). Tente novamente em alguns segundos.`,
+        'Ollama em warmup; fallback bloqueado para evitar decisao divergente.'
+      )
+      return validateOrAsk({
+        decision: warmupDecision,
+        skills,
+        userGoal,
+        mode: provider.name,
+        plannerState,
+        history,
+        providerFallback: providerFailureMeta({ providerName: provider.name, error })
+      })
+    }
+
     const fallbackProvider = getFallbackPlannerProvider(config, env)
     if (fallbackProvider) {
       const fallbackDecision = await fallbackProvider.decideNextAction({ userMessage, plannerState, skills, history, config, env, fetch, signal })
+      const providerFallback = providerFailureMeta({
+        providerName: provider.name,
+        error,
+        fallbackProviderName: fallbackProvider.name,
+        finalProviderName: fallbackDecision.planner?.mode || fallbackProvider.name
+      })
       return {
         ...fallbackDecision,
         planner: {
           ...fallbackDecision.planner,
-          providerFallback: `${provider.name} falhou: ${shortErrorMessage(error)}; fallback=${fallbackProvider.name}`
+          providerFallback
         }
       }
     }
@@ -90,7 +125,7 @@ async function decideNextAction ({
       mode: provider.name,
       plannerState,
       history,
-      providerFallback: shortErrorMessage(error)
+      providerFallback: providerFailureMeta({ providerName: provider.name, error })
     })
   }
 

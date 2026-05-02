@@ -18,6 +18,9 @@ const { createNavigationSystem } = require('./navigation')
 const { createCollectionSystem } = require('./collection')
 const { createCommandSystem } = require('./commands')
 const { createBotRuntime } = require('./bot-runtime')
+const { getPlannerProvider } = require('./ai/providers')
+const { getLocalLlmProfile } = require('./ai/local-llm-profiles')
+const { warmupOllama } = require('./ai/providers/ollama-provider')
 const {
   parseCoords,
   createChatHelpers,
@@ -243,10 +246,11 @@ function setupSkillRegistry ({
     description: 'Para movimento e cancela skill atual.',
     risk: 'low',
     timeoutMs: 1000,
+    inputSchema: {},
     requires: ['botOnline', 'navigationReady'],
     effects: ['movement', 'activeSkill'],
     cost: { base: 1 },
-    plannerHints: 'Use como acao segura para interromper movimento ou recuperar controle.',
+    plannerHints: 'Use como acao segura para interromper movimento ou recuperar controle. Exemplo: "para" -> args {}. Nao envie target, mode nem texto em args.',
     run: () => {
       const cancelled = context.cancelActiveSkill()
       context.navigationController.stop('skill registry stop')
@@ -311,6 +315,18 @@ function setupSkillRegistry ({
     timeoutMs: 60000,
     inputSchema: { target: 'string', count: 'number optional max 10' },
     requires: ['botOnline', 'navigationReady', 'notReconnecting'],
+    preconditions: [
+      ({ target }) => {
+        if (!target) return null
+        if (collection.isKnownCollectTarget(target)) return null
+        return {
+          ok: false,
+          reason: `alvo coletavel desconhecido: ${target}`,
+          missingRequirements: [],
+          suggestedNextActions: []
+        }
+      }
+    ],
     effects: ['world', 'inventory', 'position', 'drops'],
     cost: { base: 5, movement: true, worldChange: true },
     plannerHints: 'Use para transformar percepcao em recurso; prefere alvos visiveis e seguros.',
@@ -443,7 +459,7 @@ function setupSkillRegistry ({
     requires: ['botOnline', 'navigationReady', 'notReconnecting'],
     effects: ['inventory', 'position', 'containerMemory'],
     cost: { base: 5, movement: true },
-    plannerHints: 'Use para organizar inventario preservando itens protegidos pela skill de containers.',
+    plannerHints: 'Use para organizar inventario preservando itens protegidos. Exemplos: "guarda blocos" -> { "mode": "blocks" }; "guarda recursos" -> { "mode": "resources" }; "guarda drops" -> { "mode": "drops" }; "guarda tudo" -> { "mode": "all" }; "guarda carvao" -> { "mode": "target", "target": "coal" }.',
     run: ({ mode = 'target', target = null, count = null }) => containerHelpers.depositByRequest({ mode, target, count })
   })
 
@@ -513,6 +529,42 @@ function setupSkillRegistry ({
   })
 
   return registry
+}
+
+function startOllamaWarmup ({ context, config, env = process.env, fetch = globalThis.fetch }) {
+  const provider = getPlannerProvider(config, env)
+  if (provider.name !== 'ollama') return null
+
+  const profile = getLocalLlmProfile(config, env)
+  const runtime = {
+    status: 'warming',
+    startedAt: Date.now(),
+    finishedAt: null,
+    error: null,
+    model: profile.model,
+    profile: profile.name,
+    keepAlive: profile.keepAlive
+  }
+
+  config.ai = config.ai || {}
+  config.ai.ollamaRuntime = runtime
+  context.ollamaRuntime = runtime
+
+  console.log(`Ollama warmup iniciado: model=${profile.model} profile=${profile.name} keep_alive=${profile.keepAlive}`)
+  warmupOllama({ profile, env, fetch })
+    .then(() => {
+      runtime.status = 'ready'
+      runtime.finishedAt = Date.now()
+      console.log(`Ollama warmup concluido em ${runtime.finishedAt - runtime.startedAt}ms`)
+    })
+    .catch((error) => {
+      runtime.status = 'failed'
+      runtime.finishedAt = Date.now()
+      runtime.error = error.message
+      console.error(`Ollama warmup falhou: ${error.message}`)
+    })
+
+  return runtime
 }
 
 function start () {
@@ -711,11 +763,13 @@ function start () {
   context.reconnectBot = runtime.reconnectBot
 
   runtime.start()
+  startOllamaWarmup({ context, config })
   return { context, runtime }
 }
 
 module.exports = {
   start,
   loadConfig,
-  setupSkillRegistry
+  setupSkillRegistry,
+  startOllamaWarmup
 }

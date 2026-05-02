@@ -13,7 +13,7 @@ const LOCAL_LLM_PROFILES = {
     maxOutputTokens: 160,
     maxSteps: 1,
     timeoutMs: 15000,
-    keepAlive: '30s'
+    keepAlive: '24h'
   },
   equilibrio: {
     name: 'equilibrio',
@@ -25,7 +25,7 @@ const LOCAL_LLM_PROFILES = {
     maxOutputTokens: 256,
     maxSteps: 1,
     timeoutMs: 20000,
-    keepAlive: '5m'
+    keepAlive: '24h'
   },
   performance: {
     name: 'performance',
@@ -37,7 +37,7 @@ const LOCAL_LLM_PROFILES = {
     maxOutputTokens: 384,
     maxSteps: 1,
     timeoutMs: 30000,
-    keepAlive: '15m'
+    keepAlive: '24h'
   }
 }
 

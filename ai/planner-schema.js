@@ -1,5 +1,8 @@
-const VALID_INTENTS = new Set(['execute_skill', 'ask_user', 'refuse', 'stop'])
+const VALID_INTENTS = new Set(['execute_skill', 'ask_user', 'refuse'])
 const VALID_RISKS = new Set(['low', 'medium', 'high'])
+const COLLECT_SKILLS = new Set(['collection.collect', 'collection.collect_block'])
+const DEPOSIT_MODES = ['target', 'all', 'resources', 'blocks', 'drops']
+const DEPOSIT_GROUP_MODES = ['all', 'resources', 'blocks', 'drops']
 
 function skillIdsFromTools (skills = []) {
   return new Set(skills.map(skill => skill.id).filter(Boolean))
@@ -7,6 +10,51 @@ function skillIdsFromTools (skills = []) {
 
 function isPlainObject (value) {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+}
+
+function asArray (value) {
+  if (value == null) return []
+  return Array.isArray(value) ? value : [value]
+}
+
+function allowedCollectTargetsFromState (plannerState = {}) {
+  const allowedActions = plannerState.allowedActions || {}
+  return [...new Set(asArray(allowedActions.collectTargets)
+    .filter(value => typeof value === 'string' && value.trim().length > 0))]
+}
+
+function skillById (skills = []) {
+  return new Map(skills.filter(skill => skill?.id).map(skill => [skill.id, skill]))
+}
+
+function validateArgsForSkill (action, options = {}) {
+  const errors = []
+  const skill = action?.skill
+  const args = action?.args
+
+  if (!isPlainObject(args)) return errors
+
+  if (COLLECT_SKILLS.has(skill)) {
+    const allowedTargets = allowedCollectTargetsFromState(options.plannerState || {})
+    if (allowedTargets.length > 0 && !allowedTargets.includes(args.target)) {
+      errors.push(`${skill}.target fora do vocabulario permitido: ${args.target}`)
+    }
+  }
+
+  if (skill === 'containers.deposit') {
+    if (!DEPOSIT_MODES.includes(args.mode)) {
+      errors.push(`containers.deposit.mode invalido: ${args.mode}`)
+    } else if (args.mode === 'target') {
+      if (typeof args.target !== 'string' || args.target.trim().length === 0) {
+        errors.push('containers.deposit.target obrigatorio quando mode=target')
+      }
+    } else {
+      if ('target' in args) errors.push(`containers.deposit.target nao permitido quando mode=${args.mode}`)
+      if ('count' in args) errors.push(`containers.deposit.count nao permitido quando mode=${args.mode}`)
+    }
+  }
+
+  return errors
 }
 
 function validatePlannerDecision (decision, options = {}) {
@@ -40,6 +88,8 @@ function validatePlannerDecision (decision, options = {}) {
 
       if (!isPlainObject(decision.nextAction.args)) {
         errors.push('nextAction.args deve ser objeto')
+      } else {
+        errors.push(...validateArgsForSkill(decision.nextAction, options))
       }
     }
   } else if (decision.nextAction !== null) {
@@ -79,12 +129,86 @@ function makePlannerDecision ({
   }
 }
 
-function plannerDecisionJsonSchema (skills = []) {
-  const skillIds = [...skillIdsFromTools(skills)]
-  const skillProperty = skillIds.length > 0
-    ? { type: 'string', enum: skillIds }
-    : { type: 'string', minLength: 1 }
+function objectSchemaForSkillArgs (skill, options = {}) {
+  if (skill?.id === 'containers.deposit') return objectSchemaForDepositArgs()
 
+  const base = skill?.inputSchema && typeof skill.inputSchema === 'object' && skill.inputSchema.type === 'object'
+    ? JSON.parse(JSON.stringify(skill.inputSchema))
+    : { type: 'object', properties: {}, additionalProperties: false }
+
+  if (COLLECT_SKILLS.has(skill?.id)) {
+    const allowedTargets = allowedCollectTargetsFromState(options.plannerState || {})
+    if (allowedTargets.length > 0) {
+      base.properties = {
+        ...(base.properties || {}),
+        target: { type: 'string', enum: allowedTargets }
+      }
+      base.required = [...new Set([...(base.required || []), 'target'])]
+      base.additionalProperties = false
+    }
+  }
+
+  return base
+}
+
+function objectSchemaForDepositArgs () {
+  return {
+    oneOf: [
+      {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          mode: { type: 'string', enum: DEPOSIT_GROUP_MODES }
+        },
+        required: ['mode']
+      },
+      {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          mode: { type: 'string', enum: ['target'] },
+          target: { type: 'string', minLength: 1 },
+          count: { type: 'number', minimum: 1, maximum: 64 }
+        },
+        required: ['mode', 'target']
+      }
+    ]
+  }
+}
+
+function nextActionSchemaForSkills (skills = [], options = {}) {
+  const byId = skillById(skills)
+  const skillIds = [...byId.keys()]
+
+  if (skillIds.length === 0) {
+    return {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        skill: { type: 'string', minLength: 1 },
+        args: { type: 'object', additionalProperties: true }
+      },
+      required: ['skill', 'args']
+    }
+  }
+
+  return {
+    oneOf: skillIds.map((id) => {
+      const skill = byId.get(id)
+      return {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          skill: { type: 'string', enum: [id] },
+          args: objectSchemaForSkillArgs(skill, options)
+        },
+        required: ['skill', 'args']
+      }
+    })
+  }
+}
+
+function plannerDecisionJsonSchema (skills = [], options = {}) {
   return {
     type: 'object',
     additionalProperties: false,
@@ -94,18 +218,7 @@ function plannerDecisionJsonSchema (skills = []) {
       nextAction: {
         anyOf: [
           { type: 'null' },
-          {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              skill: skillProperty,
-              args: {
-                type: 'object',
-                additionalProperties: true
-              }
-            },
-            required: ['skill', 'args']
-          }
+          nextActionSchemaForSkills(skills, options)
         ]
       },
       reasonSummary: { type: 'string', minLength: 1, maxLength: 240 },
@@ -128,5 +241,6 @@ module.exports = {
   VALID_RISKS,
   validatePlannerDecision,
   makePlannerDecision,
-  plannerDecisionJsonSchema
+  plannerDecisionJsonSchema,
+  allowedCollectTargetsFromState
 }

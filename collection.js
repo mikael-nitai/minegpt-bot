@@ -286,6 +286,11 @@ function createCollectionSystem ({
     return candidates[0] ? { ...candidates[0], target } : null
   }
 
+  function isKnownCollectTarget (targetQuery) {
+    const target = normalizeCollectTarget(targetQuery)
+    return target.blockNames.size > 0 || target.blockCategories.size > 0
+  }
+
   function getToolKindForBlock (block) {
     if (woodBlocks.has(block.name)) return 'axe'
     if (oreBlocks.has(block.name) || stoneBlocks.has(block.name)) return 'pickaxe'
@@ -791,6 +796,7 @@ function createCollectionSystem ({
     describeDroppedItemEntity,
     collectDropsAround,
     runAutoDropCollection,
+    isKnownCollectTarget,
     collectByTargetAction,
     collectBlockByTarget,
     collectMultipleBlocksByTarget

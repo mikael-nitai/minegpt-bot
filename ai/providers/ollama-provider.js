@@ -19,6 +19,7 @@ function buildSystemPrompt () {
     'Responda somente um objeto JSON valido no schema. Sem markdown, sem texto extra.',
     'Escolha uma unica proxima acao. Pedido multi-step vira apenas a proxima acao util.',
     'Use somente ids de skills listados. Nunca invente skill, args ou coordenadas.',
+    'Para comandos do usuario como "para", "pare" ou "parar", use execute_skill com movement.stop e args {} quando essa skill existir.',
     'Se faltar informacao, use intent ask_user.',
     'Nao joga Minecraft, nao escreve codigo e nao chama comandos externos.',
     'Prefira baixo risco; a execucao real sera validada fora do modelo.',
@@ -154,6 +155,46 @@ async function requestOllamaChat ({ profile, messages, schema, fetch, signal }) 
   }
 }
 
+async function warmupOllama ({ profile, fetch, signal, env = process.env } = {}) {
+  const selectedProfile = profile || getLocalLlmProfile({}, env)
+  const startedAt = Date.now()
+  await requestOllamaChat({
+    profile: {
+      ...selectedProfile,
+      maxOutputTokens: 8,
+      temperature: 0,
+      keepAlive: selectedProfile.keepAlive || '-1'
+    },
+    fetch,
+    signal,
+    messages: [
+      {
+        role: 'system',
+        content: 'Responda somente JSON valido.'
+      },
+      {
+        role: 'user',
+        content: 'Retorne exatamente {"ok":true}.'
+      }
+    ],
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        ok: { type: 'boolean' }
+      },
+      required: ['ok']
+    }
+  })
+
+  debugLog(env, 'warmup', {
+    ok: true,
+    durationMs: Date.now() - startedAt,
+    model: selectedProfile.model,
+    keepAlive: selectedProfile.keepAlive
+  })
+}
+
 function debugEnabled (env = process.env) {
   return env.MINEGPT_AI_DEBUG === '1'
 }
@@ -269,7 +310,7 @@ function validationIsRepairable (validation) {
   )
 }
 
-async function requestAndParseDecision ({ profile, messages, schema, skills, fetch, env, signal }) {
+async function requestAndParseDecision ({ profile, messages, schema, skills, plannerState, fetch, env, signal }) {
   const startedAt = Date.now()
   const responseData = await requestOllamaChat({ profile, messages, schema, fetch, signal })
   debugLog(env, 'ollama_call', {
@@ -279,7 +320,7 @@ async function requestAndParseDecision ({ profile, messages, schema, skills, fet
   })
   const rawContent = contentFromOllamaResponse(responseData)
   const decision = parseStrictJsonObject(rawContent)
-  const validation = validatePlannerDecision(decision, { skills })
+  const validation = validatePlannerDecision(decision, { skills, plannerState })
   if (!validation.ok) {
     const error = new OllamaProviderError(`decisao invalida do Ollama: ${validation.errors.join('; ')}`, {
       code: 'invalid_decision',
@@ -306,7 +347,7 @@ async function decideNextAction ({
   env = process.env
 }) {
   const profile = getLocalLlmProfile(config)
-  const schema = plannerDecisionJsonSchema(skills)
+  const schema = plannerDecisionJsonSchema(skills, { plannerState })
   const payload = buildPlannerPromptPayload({ userMessage, plannerState, skills, history, schema, profile })
   const messages = [
     { role: 'system', content: buildSystemPrompt() },
@@ -321,7 +362,7 @@ async function decideNextAction ({
   let parsed
 
   try {
-    parsed = await requestAndParseDecision({ profile, messages, schema, skills, fetch, env, signal })
+    parsed = await requestAndParseDecision({ profile, messages, schema, skills, plannerState, fetch, env, signal })
     debugLog(env, 'parse', { ok: true, repaired: false })
   } catch (error) {
     debugLog(env, 'parse', { ok: false, reason: error.message, code: error.code })
@@ -333,7 +374,7 @@ async function decideNextAction ({
           rawContent: error.rawContent || '',
           validationErrors: error.validation?.errors || []
         })
-        parsed = await requestAndParseDecision({ profile, messages: repairMessages, schema, skills, fetch, env, signal })
+        parsed = await requestAndParseDecision({ profile, messages: repairMessages, schema, skills, plannerState, fetch, env, signal })
         debugLog(env, 'parse', { ok: true, repaired: true })
       } catch (retryError) {
         debugLog(env, 'parse_retry', { ok: false, reason: retryError.message, code: retryError.code })
@@ -376,5 +417,6 @@ module.exports = {
   parseStrictJsonObject,
   requestAndParseDecision,
   requestOllamaChat,
+  warmupOllama,
   OllamaProviderError
 }

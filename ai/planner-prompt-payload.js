@@ -151,6 +151,7 @@ function compactPlannerStateForLlm (plannerState = {}, options = {}) {
   const safeState = jsonSafe(plannerState, {}) || {}
   const vitals = safeState.vitals || {}
   const perception = safeState.perception || {}
+  const allowedActions = safeState.allowedActions || {}
 
   return {
     status: {
@@ -175,6 +176,10 @@ function compactPlannerStateForLlm (plannerState = {}, options = {}) {
       resources: compactTokenList(perception.resources, limits.resources),
       drops: compactTokenList(perception.drops, limits.drops),
       containers: compactTokenList(perception.containers, limits.perceptionContainers)
+    },
+    allowedActions: {
+      collectTargets: asArray(allowedActions.collectTargets).slice(0, 24),
+      collectCategories: asArray(allowedActions.collectCategories).slice(0, 12)
     },
     survival: safeState.survival
       ? {
