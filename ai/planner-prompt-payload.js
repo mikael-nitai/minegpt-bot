@@ -214,9 +214,14 @@ function compactSkillsForLlm (skills = [], options = {}) {
     .map(skill => ({
       id: skill.id,
       description: truncateText(skill.description || '', 120),
+      whenToUse: truncateText(skill.whenToUse || skill.plannerHints || '', 220),
+      whenNotToUse: truncateText(skill.whenNotToUse || '', 180),
       inputSchema: jsonSafe(skill.inputSchema || {}, {}),
+      naturalExamples: asArray(skill.naturalExamples).slice(0, 5).map(example => truncateText(example, 80)),
+      argsExamples: asArray(skill.argsExamples).slice(0, 5).map(example => jsonSafe(example, {})),
       risk: skill.risk || 'low',
-      plannerHints: truncateText(skill.plannerHints || '', 180)
+      plannerHints: truncateText(skill.plannerHints || '', 180),
+      safetyNotes: asArray(skill.safetyNotes).slice(0, 4).map(note => truncateText(note, 120))
     }))
 }
 

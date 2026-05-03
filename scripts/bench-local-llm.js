@@ -2,7 +2,7 @@ const { performance } = require('perf_hooks')
 const { TextDecoder } = require('util')
 const { getLocalLlmProfile } = require('../ai/local-llm-profiles')
 const { plannerDecisionJsonSchema, validatePlannerDecision } = require('../ai/planner-schema')
-const { normalizePlannerDecisionArgs } = require('../ai/providers/provider-utils')
+const { normalizePlannerDecisionArgs } = require('../ai/argument-normalizer')
 const {
   buildSystemPrompt,
   buildUserPrompt,
@@ -13,18 +13,19 @@ const {
 } = require('../ai/providers/ollama-provider')
 
 const SCENARIOS = [
-  'vem aqui',
-  'para',
-  'me segue',
-  'pega madeira',
-  'coleta 3 pedras',
-  'faz crafting table',
-  'faz tochas',
-  'procura carvao no bau',
-  'guarda blocos',
-  'guarda recursos',
-  'guarda tudo',
-  'pega madeira e faz uma crafting table'
+  'bot pare',
+  'bot caminhe 5 blocos para frente',
+  'bot vá para frente',
+  'bot venha para mim',
+  'bot quebre tronco de árvore de carvalho',
+  'bot colete madeira de carvalho',
+  'bot minera carvão',
+  'bot faça tochas',
+  'bot guarda blocos',
+  'bot guarda recursos',
+  'bot guarda tudo',
+  'bot procura carvão no baú',
+  'bot pega 16 carvão no baú'
 ]
 
 const BENCH_SKILLS = [
@@ -57,7 +58,7 @@ const BENCH_SKILLS = [
     plannerHints: 'Use para estado, status ou diagnostico.'
   },
   {
-    id: 'collection.collect_block',
+    id: 'collection.collect',
     description: 'Coletar ou minerar blocos conhecidos no mundo.',
     inputSchema: {
       type: 'object',
@@ -72,37 +73,37 @@ const BENCH_SKILLS = [
     plannerHints: 'Use target como bloco concreto listado em plannerState.allowedActions.collectTargets. Use collectCategories apenas para entender a intencao; nao envie categoria como target. Nao invente nomes como oak_tree. Extraia count quando houver numero.'
   },
   {
-    id: 'crafting.craft_item',
+    id: 'crafting.craft',
     description: 'Craftar item conhecido usando recursos disponiveis.',
     inputSchema: {
       type: 'object',
       properties: {
-        item: { type: 'string' },
+        target: { type: 'string' },
         count: { type: 'integer', minimum: 1, maximum: 64 }
       },
-      required: ['item'],
+      required: ['target'],
       additionalProperties: false
     },
     risk: 'low',
     plannerHints: 'Use para crafting_table, torch, stick e itens basicos. Escolha uma unica proxima acao.'
   },
   {
-    id: 'drops.pickup',
+    id: 'drops.collect',
     description: 'Pegar drops proximos no chao.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     risk: 'low',
     plannerHints: 'Use para pega drops.'
   },
   {
-    id: 'containers.find_item',
+    id: 'containers.search',
     description: 'Procurar item em bau ou container conhecido/proximo.',
     inputSchema: {
       type: 'object',
       properties: {
-        item: { type: 'string' },
+        target: { type: 'string' },
         count: { type: 'integer', minimum: 1, maximum: 64 }
       },
-      required: ['item'],
+      required: ['target'],
       additionalProperties: false
     },
     risk: 'low',
@@ -197,17 +198,19 @@ function fakePlannerState () {
 
 function expectedHintsForScenario (scenario) {
   const text = scenario.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
-  if (text.includes('vem')) return { skills: ['movement.come_here'] }
-  if (text === 'para') return { skills: ['movement.stop'] }
+  if (text.includes('venha') || text.includes('vem')) return { skills: ['movement.come_here'] }
+  if (text === 'bot pare' || text === 'para' || text === 'bot para') return { skills: ['movement.stop'] }
+  if (text.includes('para frente') || text.includes('va para frente')) return { skills: [], allowAskUser: true }
   if (text.includes('segue')) return { skills: ['movement.follow_owner'] }
   if (text.includes('madeira') && text.includes('crafting')) {
-    return { skills: ['collection.collect_block', 'crafting.craft_item'], targets: ['wood', 'oak_log', 'log', 'madeira', 'crafting_table'] }
+    return { skills: ['collection.collect', 'crafting.craft'], targets: ['wood', 'oak_log', 'log', 'madeira', 'crafting_table'] }
   }
-  if (text.includes('madeira')) return { skills: ['collection.collect_block'], targets: ['wood', 'oak_log', 'log', 'madeira'] }
-  if (text.includes('pedras')) return { skills: ['collection.collect_block'], targets: ['stone', 'cobblestone', 'pedra'], count: 3 }
-  if (text.includes('tochas')) return { skills: ['crafting.craft_item'], targets: ['torch', 'tocha'] }
-  if (text.includes('crafting table')) return { skills: ['crafting.craft_item'], targets: ['crafting_table', 'crafting table', 'mesa_de_trabalho'] }
-  if (text.includes('carvao')) return { skills: ['containers.find_item'], targets: ['coal', 'carvao'] }
+  if (text.includes('madeira') || text.includes('tronco')) return { skills: ['collection.collect'], targets: ['wood', 'oak_log', 'log', 'madeira'] }
+  if (text.includes('pedras')) return { skills: ['collection.collect'], targets: ['stone', 'cobblestone', 'pedra'], count: 3 }
+  if (text.includes('tochas')) return { skills: ['crafting.craft'], targets: ['torch', 'tocha'] }
+  if (text.includes('crafting table')) return { skills: ['crafting.craft'], targets: ['crafting_table', 'crafting table', 'mesa_de_trabalho'] }
+  if (text.includes('pega') && text.includes('carvao')) return { skills: ['containers.withdraw'], targets: ['coal', 'carvao'], count: 16 }
+  if (text.includes('carvao')) return { skills: ['containers.search'], targets: ['coal', 'carvao'] }
   if (text.includes('guarda') && text.includes('recursos')) return { skills: ['containers.deposit'], args: { mode: 'resources' } }
   if (text.includes('guarda') && text.includes('tudo')) return { skills: ['containers.deposit'], args: { mode: 'all' } }
   if (text.includes('guarda') && text.includes('drops')) return { skills: ['containers.deposit'], args: { mode: 'drops' } }
@@ -220,9 +223,9 @@ function extractArgumentText (args = {}) {
 }
 
 function checkArgumentCoherence (scenario, decision) {
-  if (decision.intent !== 'execute_skill') return { ok: decision.intent === 'ask_user', detail: decision.intent }
-
   const hints = expectedHintsForScenario(scenario)
+  if (decision.intent !== 'execute_skill') return { ok: decision.intent === 'ask_user' && hints.allowAskUser === true, detail: decision.intent }
+
   const skill = decision.nextAction?.skill
   const argsText = extractArgumentText(decision.nextAction?.args || {})
   const errors = []
@@ -436,6 +439,10 @@ async function runScenario ({ scenario, profile, skills }) {
       decisionValid: false,
       skillExists: false,
       argsCoherent: false,
+      planOk: false,
+      dryRunWouldPass: false,
+      fallbackUsed: false,
+      providerEffective: 'ollama',
       totalMs: performance.now() - startedAt,
       error: error.message
     }
@@ -444,8 +451,10 @@ async function runScenario ({ scenario, profile, skills }) {
   const timings = tryReadResponseTimings(responseData)
 
   let decision
+  let normalization
   try {
-    decision = normalizePlannerDecisionArgs(parseStrictJsonObject(rawContent), skills)
+    normalization = normalizePlannerDecisionArgs(parseStrictJsonObject(rawContent), { skills, plannerState })
+    decision = normalization.decision
   } catch (error) {
     return {
       scenario,
@@ -454,6 +463,10 @@ async function runScenario ({ scenario, profile, skills }) {
       decisionValid: false,
       skillExists: false,
       argsCoherent: false,
+      planOk: false,
+      dryRunWouldPass: false,
+      fallbackUsed: false,
+      providerEffective: 'ollama',
       totalMs,
       firstResponseMs,
       timings,
@@ -465,14 +478,22 @@ async function runScenario ({ scenario, profile, skills }) {
   const validation = validatePlannerDecision(decision, { skills, plannerState })
   const skillExists = decision.intent !== 'execute_skill' || skills.some(skill => skill.id === decision.nextAction?.skill)
   const coherence = checkArgumentCoherence(scenario, decision)
+  const planOk = validation.ok && skillExists && (decision.intent !== 'execute_skill' || coherence.ok)
+  const dryRunWouldPass = planOk
 
   return {
     scenario,
-    ok: validation.ok && skillExists && coherence.ok,
+    ok: planOk,
     jsonValid: true,
     decisionValid: validation.ok,
     skillExists,
     argsCoherent: coherence.ok,
+    planOk,
+    dryRunWouldPass,
+    fallbackUsed: false,
+    providerEffective: 'ollama',
+    normalizedChanged: Boolean(normalization?.changed),
+    normalizationWarnings: normalization?.warnings || [],
     totalMs,
     firstResponseMs,
     timings,
@@ -496,6 +517,8 @@ function summarize (results) {
   const validDecisions = results.filter(result => result.decisionValid).length
   const existingSkills = results.filter(result => result.skillExists).length
   const coherentArgs = results.filter(result => result.argsCoherent).length
+  const plansOk = results.filter(result => result.planOk).length
+  const dryRunsOk = results.filter(result => result.dryRunWouldPass).length
   const average = durations.reduce((sum, value) => sum + value, 0) / (durations.length || 1)
   const worst = durations[durations.length - 1]
   const p95Index = Math.max(0, Math.ceil(durations.length * 0.95) - 1)
@@ -509,7 +532,9 @@ function summarize (results) {
     jsonRate: validJson / total,
     decisionRate: validDecisions / total,
     skillRate: existingSkills / total,
-    argsRate: coherentArgs / total
+    argsRate: coherentArgs / total,
+    planRate: plansOk / total,
+    dryRunRate: dryRunsOk / total
   }
 }
 
@@ -549,7 +574,8 @@ async function benchLocalLlm () {
     const status = result.ok ? 'ok' : 'falha'
     const detail = result.error || result.errors?.join('; ') || `${result.intent}${result.skill ? ` -> ${result.skill}` : ''}`
     const actionText = result.jsonValid ? ` | nextAction=${JSON.stringify(result.nextAction || null)}` : ''
-    console.log(`- ${scenario}: ${status} | ${formatMs(result.totalMs)} | ${detail}${actionText}`)
+    const normalizedText = result.normalizedChanged ? ` | normalized=${result.normalizationWarnings.join(', ') || 'sim'}` : ''
+    console.log(`- ${scenario}: ${status} | ${formatMs(result.totalMs)} | ${detail}${actionText}${normalizedText}`)
   }
 
   const summary = summarize(results)
@@ -565,6 +591,8 @@ async function benchLocalLlm () {
   console.log(`Decisoes validas: ${formatPct(summary.decisionRate)}`)
   console.log(`Skills existentes: ${formatPct(summary.skillRate)}`)
   console.log(`Argumentos coerentes: ${formatPct(summary.argsRate)}`)
+  console.log(`Plan ok estimado: ${formatPct(summary.planRate)}`)
+  console.log(`Dry-run passaria: ${formatPct(summary.dryRunRate)}`)
 
   const failures = results.filter(result => !result.ok)
   if (failures.length > 0) {

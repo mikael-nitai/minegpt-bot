@@ -13,6 +13,8 @@ const { getPlannerProvider, DEFAULT_PROVIDER, PROVIDERS } = require('./providers
 const { getLocalLlmProfile, describeLocalLlmProfile, DEFAULT_LLM_PROFILE, LOCAL_LLM_PROFILES } = require('./local-llm-profiles')
 const { buildPlannerPromptPayload, compactPlannerStateForLlm, compactSkillsForLlm, compactHistoryForLlm } = require('./planner-prompt-payload')
 const { createAiRateLimiter, getAiMaxCallsPerMinute, getSkillsCacheTtlMs } = require('./planner-limits')
+const { normalizePlannerDecisionArgs } = require('./argument-normalizer')
+const { resolveContainerModeAlias, resolveCollectTargetAlias, resolveItemAlias } = require('./semantic-aliases')
 
 module.exports = {
   decideNextAction,
@@ -31,6 +33,10 @@ module.exports = {
   createAiRateLimiter,
   getAiMaxCallsPerMinute,
   getSkillsCacheTtlMs,
+  normalizePlannerDecisionArgs,
+  resolveContainerModeAlias,
+  resolveCollectTargetAlias,
+  resolveItemAlias,
   validatePlannerDecision,
   makePlannerDecision,
   plannerDecisionJsonSchema,

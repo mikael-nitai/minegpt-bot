@@ -1,3 +1,5 @@
+const fs = require('fs')
+const path = require('path')
 const { getLocalLlmProfile } = require('../local-llm-profiles')
 const { plannerDecisionJsonSchema, validatePlannerDecision } = require('../planner-schema')
 const { buildPlannerPromptPayload } = require('../planner-prompt-payload')
@@ -16,10 +18,17 @@ class OllamaProviderError extends Error {
 function buildSystemPrompt () {
   return [
     'Voce e o planner JSON de um bot Minecraft survival.',
+    'Voce e planejador, nao executor. A execucao real sera validada por codigo local.',
     'Responda somente um objeto JSON valido no schema. Sem markdown, sem texto extra.',
     'Escolha uma unica proxima acao. Pedido multi-step vira apenas a proxima acao util.',
     'Use somente ids de skills listados. Nunca invente skill, args ou coordenadas.',
+    'Use args exatamente no formato dos exemplos das skills.',
     'Para comandos do usuario como "para", "pare" ou "parar", use execute_skill com movement.stop e args {} quando essa skill existir.',
+    'Nao use movement.stop so porque a frase contem "para". Em "para frente", "para mim" e "para o bau", "para" nao significa parar.',
+    '"para frente" indica direcao; se nao houver skill segura para andar nessa direcao, use ask_user.',
+    '"tronco de arvore de carvalho", "madeira de carvalho" e "carvalho" devem mapear para collection.collect com alvo de log quando a skill existir.',
+    '"mesa de trabalho" deve mapear para crafting_table; "tochas" para torch; "gravetos" para stick.',
+    'Se a skill existe mas o argumento estiver incerto, use ask_user.',
     'Se faltar informacao, use intent ask_user.',
     'Nao joga Minecraft, nao escreve codigo e nao chama comandos externos.',
     'Prefira baixo risco; a execucao real sera validada fora do modelo.',
@@ -204,6 +213,32 @@ function debugLog (env, event, details) {
   console.log(`[minegpt-ai] ${event}: ${JSON.stringify(details)}`)
 }
 
+function debugPayloadEnabled (env = process.env) {
+  return env.MINEGPT_AI_DEBUG_PAYLOAD === '1'
+}
+
+function debugRawEnabled (env = process.env) {
+  return env.MINEGPT_AI_DEBUG_RAW === '1'
+}
+
+function saveDebugEnabled (env = process.env) {
+  return env.MINEGPT_AI_SAVE_DEBUG === '1'
+}
+
+function debugLogFull (env, event, details) {
+  if (!debugEnabled(env)) return
+  console.log(`[minegpt-ai] ${event}: ${JSON.stringify(details)}`)
+}
+
+function saveDebugArtifact (env, name, value) {
+  if (!saveDebugEnabled(env)) return
+  const dir = path.join(__dirname, '..', '..', 'logs')
+  fs.mkdirSync(dir, { recursive: true })
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const filename = path.join(dir, `${timestamp}-${name}.json`)
+  fs.writeFileSync(filename, JSON.stringify(value, null, 2))
+}
+
 function contentFromOllamaResponse (data) {
   return data?.message?.content || data?.response || ''
 }
@@ -359,10 +394,16 @@ async function decideNextAction ({
     profile: payload.metrics.profile,
     model: payload.metrics.model
   })
+  if (debugPayloadEnabled(env)) {
+    debugLogFull(env, 'payload_full', payload)
+  }
+  saveDebugArtifact(env, 'payload', payload)
   let parsed
 
   try {
     parsed = await requestAndParseDecision({ profile, messages, schema, skills, plannerState, fetch, env, signal })
+    if (debugRawEnabled(env)) debugLogFull(env, 'ollama_raw', { rawContent: parsed.rawContent })
+    saveDebugArtifact(env, 'raw', { rawContent: parsed.rawContent })
     debugLog(env, 'parse', { ok: true, repaired: false })
   } catch (error) {
     debugLog(env, 'parse', { ok: false, reason: error.message, code: error.code })
@@ -375,6 +416,8 @@ async function decideNextAction ({
           validationErrors: error.validation?.errors || []
         })
         parsed = await requestAndParseDecision({ profile, messages: repairMessages, schema, skills, plannerState, fetch, env, signal })
+        if (debugRawEnabled(env)) debugLogFull(env, 'ollama_raw', { rawContent: parsed.rawContent, repaired: true })
+        saveDebugArtifact(env, 'raw', { rawContent: parsed.rawContent, repaired: true })
         debugLog(env, 'parse', { ok: true, repaired: true })
       } catch (retryError) {
         debugLog(env, 'parse_retry', { ok: false, reason: retryError.message, code: retryError.code })

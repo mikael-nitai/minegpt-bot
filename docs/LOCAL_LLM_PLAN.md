@@ -40,9 +40,11 @@ chat do owner
 
 O runner padrao executa no maximo uma acao por comando (`maxSteps = 1`) e possui limite duro de tres passos (`HARD_MAX_STEPS = 3`) para testes controlados.
 
-## Como O Planner Mockado Decide Hoje
+## Como O Provider Deterministico Decide Hoje
 
-`ai/planner.js` normaliza a mensagem do usuario e usa regras simples:
+`ai/planner.js` hoje e a fachada de provider. Ele seleciona o provider configurado, aplica rate limit local quando necessario, chama o provider efetivo e so usa fallback se `MINEGPT_AI_FALLBACK_PROVIDER` estiver configurado.
+
+O provider `rule_based` normaliza a mensagem do usuario e usa regras simples:
 
 - parar/cancelar -> `movement.stop`;
 - vir/vem/venha -> `movement.come_here`;
@@ -52,7 +54,7 @@ O runner padrao executa no maximo uma acao por comando (`maxSteps = 1`) e possui
 - madeira/tronco/arvore -> `collection.collect` com `target: "madeira"` e `count: 1`;
 - comandos vazios, ambiguos ou nao mapeados -> `ask_user`.
 
-Depois disso, a decisao ainda passa por `validatePlannerDecision()`. Se a skill escolhida nao estiver disponivel nas tools, o planner mockado troca a resposta para `ask_user`.
+Depois disso, a decisao ainda passa por `validatePlannerDecision()` e pelo normalizador de argumentos. Se a skill escolhida nao estiver disponivel nas tools, o provider deterministico troca a resposta para `ask_user`.
 
 ## Guardrails Do Runner
 
@@ -189,6 +191,10 @@ Esse provider deve:
 
 Estado implementado: o provider `ollama` usa `fetch` nativo do Node 18 contra `/api/chat`, envia `format` com JSON Schema para structured outputs, valida localmente com `validatePlannerDecision()` e nunca executa acao diretamente. Fallback de provider pode ser configurado por `MINEGPT_AI_FALLBACK_PROVIDER=rule_based|mock`.
 
+As skills enviadas ao Ollama sao cards seguros gerados por `ai/tool-adapter.js`, com `whenToUse`, `whenNotToUse`, exemplos naturais, exemplos de args e notas de seguranca. O payload final e compactado por `ai/planner-prompt-payload.js`.
+
+Depois da decisao do provider, `ai/argument-normalizer.js` corrige apenas aliases conhecidos e formatos seguros. Exemplos: `movement.stop` sempre vira `{}`, `blocos` vira `mode=blocks`, `mesa de trabalho` vira `crafting_table`, `tochas` vira `torch`, e `tronco de carvalho` vira `oak_log` quando esse alvo estiver permitido pelo snapshot.
+
 ## Configuracao
 
 A configuracao atual vive em `config.json`. Para AI local, ha duas opcoes conservadoras:
@@ -301,7 +307,9 @@ A validacao atual em `ai/planner-schema.js` deve continuar sendo obrigatoria. Pa
 - validar `risk` em `low`, `medium`, `high`;
 - validar `confidence` entre 0 e 1;
 - validar skill existente contra tools;
-- opcionalmente filtrar argumentos extras que nao estao no `inputSchema`.
+- normalizar argumentos com `ai/argument-normalizer.js`;
+- validar novamente depois da normalizacao;
+- bloquear execucao em erro fatal ou skill inexistente.
 
 Nao usar resposta textual do LLM para decidir execucao. A unica saida aceita deve ser `PlannerDecision` validada.
 

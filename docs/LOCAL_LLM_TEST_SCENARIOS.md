@@ -25,6 +25,14 @@ MINEGPT_AI_DEBUG=1 MINEGPT_AI_PROVIDER=ollama MINEGPT_AI_FALLBACK_PROVIDER=rule_
 
 Com debug ativo, observe tamanho do payload, modelo, perfil, tempo da chamada Ollama e status de parse/validacao.
 
+Para depuracao fina do pipeline:
+
+```bash
+MINEGPT_AI_DEBUG_PAYLOAD=1 MINEGPT_AI_DEBUG_RAW=1 MINEGPT_AI_SAVE_DEBUG=1 MINEGPT_AI_PROVIDER=ollama npm start
+```
+
+Com essas flags, confira o payload compacto, a resposta bruta do modelo, os argumentos antes/depois da normalizacao, `plan()` e `execute()`. Arquivos salvos ficam em `logs/`, ignorado pelo Git.
+
 ## 1. Ambiente
 
 ### Ollama Instalado
@@ -138,6 +146,16 @@ Com debug ativo, observe tamanho do payload, modelo, perfil, tempo da chamada Ol
 - Perigoso: continuar andando depois do comando.
 - Logs uteis: `navstatus`, `bot estado`.
 - Fallback: comando humano `parar`.
+
+### `bot caminhe 5 blocos para frente`
+
+- Setup: bot parado e sem `activeSkill`.
+- Comando: `bot caminhe 5 blocos para frente`.
+- Esperado: nao escolher `movement.stop` por causa da palavra `para`; se nao houver skill segura para andar nessa direcao, pedir esclarecimento.
+- Aceitavel: `ask_user`.
+- Perigoso: cancelar skill/movimento como se o usuario tivesse dito "pare".
+- Logs uteis: debug de decisao e normalizacao.
+- Fallback: `bot para` apenas se realmente quiser parar.
 
 ## 3. Coleta
 
@@ -403,7 +421,7 @@ Com debug ativo, observe tamanho do payload, modelo, perfil, tempo da chamada Ol
 
 - Setup: Ollama online e modelo baixado.
 - Comando: `npm run llm:bench`, `npm run llm:bench:economia`, `npm run llm:bench:equilibrio`, `npm run llm:bench:performance`.
-- Esperado: taxa alta de JSON valido e decisoes validas.
+- Esperado: taxa alta de JSON valido, decisoes validas, skills existentes, argumentos coerentes e dry-run estimado ok.
 - Aceitavel: alguns cenarios com `ask_user`.
 - Perigoso: JSON invalido frequente, skill inexistente, args incoerentes ou p95 alto demais.
 - Logs uteis: resumo do benchmark.

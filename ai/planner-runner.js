@@ -2,7 +2,7 @@ const { decideNextAction } = require('./planner')
 const { validatePlannerDecision } = require('./planner-schema')
 const { skillRegistryToPlannerTools } = require('./tool-adapter')
 const { getSkillsCacheTtlMs } = require('./planner-limits')
-const { normalizePlannerDecisionArgs } = require('./providers/provider-utils')
+const { normalizePlannerDecisionArgs } = require('./argument-normalizer')
 
 const DEFAULT_ALLOWED_RISKS = ['low', 'medium']
 const DEFAULT_MAX_STEPS = 1
@@ -25,6 +25,78 @@ const VALUABLE_ITEM_NAMES = new Set([
   'enchanted_golden_apple'
 ])
 
+function normalizeUserIntentText (text) {
+  return String(text || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function hasIntentTerm (text, terms) {
+  const padded = ` ${text} `
+  return terms.some(term => padded.includes(` ${term} `))
+}
+
+function classifyUserIntentForGuard (userMessage) {
+  const text = normalizeUserIntentText(userMessage)
+  if (!text) return 'unknown'
+
+  if (
+    text.includes('vem aqui') ||
+    text.includes('venha aqui') ||
+    text.includes('venha ate mim') ||
+    text.includes('vem para mim') ||
+    text.includes('vem pra mim') ||
+    hasIntentTerm(text, ['seguir', 'siga', 'acompanhe', 'acompanhar']) ||
+    text.includes('para frente') ||
+    text.includes('pra frente') ||
+    text.includes('andar') ||
+    text.includes('caminhar') ||
+    text.includes('caminhe') ||
+    text.includes('va para frente') ||
+    text.includes('vai para frente')
+  ) {
+    return 'movement'
+  }
+
+  if (hasIntentTerm(text, ['pare', 'para', 'parar', 'cancela', 'cancelar', 'interrompe', 'interromper'])) {
+    return 'stop'
+  }
+
+  if (hasIntentTerm(text, ['estado', 'status', 'inventario', 'posicao', 'diagnostico'])) return 'state'
+  if (hasIntentTerm(text, ['guarda', 'guardar', 'deposita', 'depositar'])) return 'deposit'
+  if (hasIntentTerm(text, ['procura', 'procurar', 'busca', 'buscar'])) return 'search'
+  if (hasIntentTerm(text, ['crafta', 'craftar', 'crafte', 'faca', 'faz', 'fazer'])) return 'craft'
+  if (hasIntentTerm(text, ['coleta', 'coletar', 'pegue', 'pega', 'pegar', 'minera', 'minerar', 'quebra', 'quebrar', 'corta', 'cortar'])) return 'collect'
+
+  return 'unknown'
+}
+
+function semanticGuardForDecision (userMessage, decision) {
+  if (decision?.intent !== 'execute_skill' || !decision.nextAction?.skill) return null
+
+  const intent = classifyUserIntentForGuard(userMessage)
+  const skill = decision.nextAction.skill
+  const mismatches = {
+    movement: new Set(['movement.stop', 'collection.collect', 'drops.collect', 'crafting.craft', 'containers.deposit', 'containers.search', 'containers.withdraw', 'blocks.place', 'inventory.drop']),
+    stop: new Set(['collection.collect', 'drops.collect', 'crafting.craft', 'containers.deposit', 'containers.search', 'containers.withdraw', 'blocks.place', 'inventory.drop']),
+    state: new Set(['collection.collect', 'drops.collect', 'crafting.craft', 'containers.deposit', 'containers.withdraw', 'blocks.place', 'inventory.drop']),
+    deposit: new Set(['collection.collect', 'drops.collect', 'crafting.craft', 'movement.come_here', 'movement.follow_owner', 'movement.go_to', 'blocks.place', 'inventory.drop']),
+    search: new Set(['collection.collect', 'drops.collect', 'crafting.craft', 'movement.come_here', 'movement.follow_owner', 'movement.go_to', 'containers.deposit', 'blocks.place', 'inventory.drop']),
+    craft: new Set(['collection.collect', 'drops.collect', 'containers.deposit', 'containers.search', 'containers.withdraw', 'movement.come_here', 'movement.follow_owner', 'movement.go_to', 'blocks.place', 'inventory.drop']),
+    collect: new Set(['containers.deposit', 'containers.search', 'containers.withdraw', 'movement.come_here', 'movement.follow_owner', 'movement.go_to', 'blocks.place', 'inventory.drop'])
+  }
+
+  if (mismatches[intent]?.has(skill)) {
+    return `decisao incoerente com o pedido: intent=${intent} skill=${skill}`
+  }
+
+  return null
+}
+
 function compactDecision (decision) {
   if (!decision) return null
   return {
@@ -41,6 +113,15 @@ function compactDecision (decision) {
     confidence: decision.confidence,
     stopAfterThis: decision.stopAfterThis
   }
+}
+
+function debugEnabled (env = process.env) {
+  return env.MINEGPT_AI_DEBUG === '1'
+}
+
+function debugLog (env, event, details) {
+  if (!debugEnabled(env)) return
+  console.log(`[minegpt-ai] ${event}: ${JSON.stringify(details)}`)
 }
 
 function compactActionResult (result) {
@@ -129,7 +210,19 @@ function survivalBlocksPlan (survivalStatus, plannedSkill) {
 
 function actionSignature (action) {
   if (!action) return ''
-  return `${action.skill}:${JSON.stringify(action.args || {})}`
+  return `${action.skill}:${JSON.stringify(canonicalActionArgs(action))}`
+}
+
+function canonicalActionArgs (action) {
+  const args = action?.args && typeof action.args === 'object' && !Array.isArray(action.args) ? { ...action.args } : {}
+  if (action?.skill === 'movement.stop') return {}
+  if ((action?.skill === 'crafting.craft' || action?.skill === 'collection.collect' || action?.skill === 'containers.withdraw') && args.target && args.count == null) {
+    args.count = 1
+  }
+  if (action?.skill === 'containers.deposit' && args.mode && args.mode !== 'target') {
+    return { mode: args.mode }
+  }
+  return args
 }
 
 function failureSignature (action, code) {
@@ -363,10 +456,59 @@ async function runPlannerCycles ({
       config: safeContext.config || {},
       signal
     })
-    const decision = normalizePlannerDecisionArgs(rawDecision, skills)
+    debugLog(env, 'decision_raw', {
+      intent: rawDecision?.intent,
+      skill: rawDecision?.nextAction?.skill || null,
+      args: rawDecision?.nextAction?.args || null,
+      provider: rawDecision?.planner?.mode || null,
+      fallback: rawDecision?.planner?.providerFallback || null
+    })
+
+    const rawValidation = validatePlannerDecision(rawDecision, { skills, plannerState })
+    const canAttemptNormalization = rawDecision?.intent === 'execute_skill' &&
+      rawDecision.nextAction &&
+      typeof rawDecision.nextAction.skill === 'string' &&
+      rawDecision.nextAction.skill.trim().length > 0
+    if (!rawValidation.ok && !canAttemptNormalization) {
+      runHistory.push({ step, decision: compactDecision(rawDecision), status: 'invalid_decision', reason: rawValidation.errors.join('; ') })
+      return stopRun({ status: 'invalid_decision', reason: rawValidation.errors.join('; '), steps: step, history: runHistory, decision: rawDecision })
+    }
+
+    const normalization = normalizePlannerDecisionArgs(rawDecision, {
+      skills,
+      plannerState,
+      catalog: safeContext.catalog || safeContext.minecraftCatalog || null
+    })
+    const decision = normalization.decision
+    if (decision?.planner) {
+      decision.planner = {
+        ...decision.planner,
+        argumentNormalization: {
+          changed: normalization.changed,
+          warnings: normalization.warnings,
+          recoverableErrors: normalization.recoverableErrors,
+          fatalErrors: normalization.fatalErrors
+        }
+      }
+    }
     latestDecision = decision
 
-    const validation = validatePlannerDecision(decision, { skills })
+    debugLog(env, 'decision_normalized', {
+      changed: normalization.changed,
+      warnings: normalization.warnings,
+      recoverableErrors: normalization.recoverableErrors,
+      fatalErrors: normalization.fatalErrors,
+      skill: decision?.nextAction?.skill || null,
+      args: decision?.nextAction?.args || null
+    })
+
+    if (normalization.fatalErrors.length > 0) {
+      const reason = normalization.fatalErrors.join('; ')
+      runHistory.push({ step, decision: compactDecision(decision), status: 'invalid_decision', reason })
+      return stopRun({ status: 'invalid_decision', reason, steps: step, history: runHistory, decision })
+    }
+
+    const validation = validatePlannerDecision(decision, { skills, plannerState })
     if (!validation.ok) {
       runHistory.push({ step, decision: compactDecision(decision), status: 'invalid_decision', reason: validation.errors.join('; ') })
       return stopRun({ status: 'invalid_decision', reason: validation.errors.join('; '), steps: step, history: runHistory, decision })
@@ -384,7 +526,19 @@ async function runPlannerCycles ({
       return stopRun({ status: 'refused', reason, steps: step, history: runHistory, decision })
     }
 
+    if (decision.intent === 'stop') {
+      const reason = decision.reasonSummary || 'planner parou sem acao'
+      runHistory.push({ step, decision: compactDecision(decision), status: 'stopped', reason })
+      return stopRun({ status: 'stopped', reason, steps: step, history: runHistory, decision, ok: true })
+    }
+
     const nextAction = decision.nextAction
+    const semanticGuardReason = semanticGuardForDecision(userMessage, decision)
+    if (semanticGuardReason) {
+      runHistory.push({ step, decision: compactDecision(decision), status: 'invalid_decision', reason: semanticGuardReason })
+      return stopRun({ status: 'invalid_decision', reason: semanticGuardReason, steps: step, history: runHistory, decision })
+    }
+
     const plannedSkill = skillRegistry.get(nextAction.skill)
     if (!plannedSkill) {
       const reason = `skill inexistente: ${nextAction.skill}`
@@ -425,6 +579,7 @@ async function runPlannerCycles ({
     }
     const plan = await skillRegistry.plan(nextAction.skill, nextAction.args, executionContext)
     latestPlan = plan
+    debugLog(env, 'plan_result', compactPlan(plan))
     if (!plan.ok) {
       const reason = plan.reason || plan.code || 'plan falhou'
       runHistory.push({ step, decision: compactDecision(decision), plan: compactPlan(plan), status: 'plan_failed', reason })
@@ -469,6 +624,7 @@ async function runPlannerCycles ({
 
     const result = await skillRegistry.execute(nextAction.skill, nextAction.args, executionContext)
     latestResult = result
+    debugLog(env, 'execute_result', compactActionResult(result))
     runHistory.push({
       step,
       decision: compactDecision(decision),

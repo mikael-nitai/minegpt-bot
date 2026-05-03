@@ -1,4 +1,4 @@
-const { actionOk, actionFail } = require('./action-result')
+const { actionOk, actionFail, itemRequirement, suggestSkillAction } = require('./action-result')
 
 const CONTAINER_SCAN_RADIUS = 16
 const CONTAINER_SCAN_VERTICAL = 4
@@ -320,6 +320,20 @@ function createContainerHelpers ({
 
   function formatCounts (items = []) {
     return items.map(item => `${item.count}x ${item.name}`).join(', ')
+  }
+
+  function requestedItemRequirement (query, target, count = 1) {
+    const names = targetCandidateNames(target)
+    return itemRequirement(names[0] || String(query || 'item'), count, {
+      query,
+      candidates: names.slice(0, 6)
+    })
+  }
+
+  function remainingDepositRequirements (remaining = []) {
+    return remaining.map(item => itemRequirement(item.name, item.remaining, {
+      reason: 'container sem espaco ou nao acessivel'
+    }))
   }
 
   function getMemoryEntryAt (position, dimension = currentDimension()) {
@@ -701,7 +715,19 @@ function createContainerHelpers ({
         }
       }
 
-      return actionFail('containers.search', `nao encontrei ${query} em ${visited.size} container(s) verificado(s)`, { visited: visited.size, failures }, startedAt)
+      return actionFail('containers.search', `nao encontrei ${query} em ${visited.size} container(s) verificado(s)`, {
+        query,
+        visited: visited.size,
+        failures
+      }, startedAt, {
+        code: visited.size === 0 ? 'no_containers_checked' : 'item_not_found',
+        retryable: true,
+        missingRequirements: [requestedItemRequirement(query, target, 1)],
+        suggestedNextActions: [
+          suggestSkillAction('containers.scan', {}, 'atualizar memoria de containers proximos'),
+          suggestSkillAction('collection.collect', { target: query, count: 1 }, 'coletar o recurso no mundo, se for coletavel')
+        ]
+      })
     } finally {
       bot().pathfinder.stop()
       bot().clearControlStates()
@@ -754,12 +780,44 @@ function createContainerHelpers ({
 
       const taken = requested - remaining
       if (taken <= 0) {
-        return actionFail('containers.withdraw', `nao encontrei ${query} para retirar em ${visited.size} container(s)`, { visited: visited.size, failures }, startedAt)
+        return actionFail('containers.withdraw', `nao encontrei ${query} para retirar em ${visited.size} container(s)`, {
+          query,
+          requested,
+          visited: visited.size,
+          failures
+        }, startedAt, {
+          code: visited.size === 0 ? 'no_containers_checked' : 'item_not_found',
+          retryable: true,
+          missingRequirements: [requestedItemRequirement(query, target, requested)],
+          suggestedNextActions: [
+            suggestSkillAction('containers.scan', {}, 'atualizar memoria de containers proximos'),
+            suggestSkillAction('collection.collect', { target: query, count: requested }, 'coletar o recurso no mundo, se for coletavel')
+          ]
+        })
       }
 
       const gainedText = formatCounts(itemStacksToCounts(gains))
       const suffix = remaining > 0 ? `; faltou ${remaining}` : ''
-      return actionOk('containers.withdraw', `Peguei ${gainedText} de container(s)${suffix}.`, { gains, remaining, visited: visited.size, failures }, startedAt)
+      return actionOk('containers.withdraw', `Peguei ${gainedText} de container(s)${suffix}.`, {
+        query,
+        requested,
+        gains,
+        remaining,
+        visited: visited.size,
+        failures
+      }, startedAt, {
+        code: remaining > 0 ? 'partial_success' : 'withdrawn',
+        severity: remaining > 0 ? 'warning' : 'info',
+        retryable: remaining > 0,
+        inventoryDelta: gains.map(item => ({ name: item.name, delta: item.count, source: 'container' })),
+        missingRequirements: remaining > 0 ? [requestedItemRequirement(query, target, remaining)] : [],
+        suggestedNextActions: remaining > 0
+          ? [
+              suggestSkillAction('containers.scan', {}, 'buscar mais containers antes de tentar retirar o restante'),
+              suggestSkillAction('collection.collect', { target: query, count: remaining }, 'coletar o restante no mundo, se for coletavel')
+            ]
+          : []
+      })
     } finally {
       bot().pathfinder.stop()
       bot().clearControlStates()
@@ -880,7 +938,13 @@ function createContainerHelpers ({
     if (getActiveSkill()) return actionFail('containers.deposit', `ja estou executando ${getActiveSkill().name}`, {}, startedAt)
     if (plan.length === 0) {
       const protectedText = protectedItems.length > 0 ? ` Itens protegidos: ${protectedItems.map(item => item.name).join(', ')}.` : ''
-      return actionFail('containers.deposit', `nao ha itens permitidos para guardar.${protectedText}`, {}, startedAt)
+      return actionFail('containers.deposit', `nao ha itens permitidos para guardar.${protectedText}`, {
+        request,
+        protectedItems
+      }, startedAt, {
+        code: protectedItems.length > 0 ? 'only_protected_items' : 'nothing_to_deposit',
+        retryable: false
+      })
     }
 
     const skill = startSkill('containers_guardar')
@@ -912,12 +976,39 @@ function createContainerHelpers ({
       }
 
       if (deposited.length === 0) {
-        return actionFail('containers.deposit', `nao consegui guardar em ${visited.size} container(s)`, { visited: visited.size, failures }, startedAt)
+        return actionFail('containers.deposit', `nao consegui guardar em ${visited.size} container(s)`, {
+          request,
+          planned: plan.map(item => ({ name: item.name, count: item.remaining })),
+          visited: visited.size,
+          failures
+        }, startedAt, {
+          code: visited.size === 0 ? 'no_containers_checked' : 'deposit_failed',
+          retryable: true,
+          missingRequirements: remainingDepositRequirements(plan),
+          suggestedNextActions: [
+            suggestSkillAction('containers.scan', {}, 'atualizar memoria de containers proximos')
+          ]
+        })
       }
 
       const remaining = plan.filter(item => item.remaining > 0)
       const suffix = remaining.length > 0 ? `; sobrou ${remaining.map(item => `${item.remaining}x ${item.name}`).join(', ')}` : ''
-      return actionOk('containers.deposit', `Guardei ${formatCounts(itemStacksToCounts(deposited))}${suffix}.`, { deposited, remaining, visited: visited.size, failures }, startedAt)
+      return actionOk('containers.deposit', `Guardei ${formatCounts(itemStacksToCounts(deposited))}${suffix}.`, {
+        request,
+        deposited,
+        remaining,
+        visited: visited.size,
+        failures
+      }, startedAt, {
+        code: remaining.length > 0 ? 'partial_success' : 'deposited',
+        severity: remaining.length > 0 ? 'warning' : 'info',
+        retryable: remaining.length > 0,
+        inventoryDelta: deposited.map(item => ({ name: item.name, delta: -item.count, target: 'container' })),
+        missingRequirements: remainingDepositRequirements(remaining),
+        suggestedNextActions: remaining.length > 0
+          ? [suggestSkillAction('containers.scan', {}, 'buscar container com espaco para guardar o restante')]
+          : []
+      })
     } finally {
       bot().pathfinder.stop()
       bot().clearControlStates()

@@ -1,4 +1,4 @@
-const VALID_INTENTS = new Set(['execute_skill', 'ask_user', 'refuse'])
+const VALID_INTENTS = new Set(['execute_skill', 'ask_user', 'refuse', 'stop'])
 const VALID_RISKS = new Set(['low', 'medium', 'high'])
 const COLLECT_SKILLS = new Set(['collection.collect', 'collection.collect_block'])
 const DEPOSIT_MODES = ['target', 'all', 'resources', 'blocks', 'drops']
@@ -98,6 +98,10 @@ function validatePlannerDecision (decision, options = {}) {
 
   if (decision.intent === 'ask_user' && (!decision.askUser || decision.askUser.trim().length === 0)) {
     errors.push('askUser obrigatorio para ask_user')
+  }
+
+  if (decision.intent === 'stop' && decision.askUser != null) {
+    errors.push('askUser deve ser null para stop')
   }
 
   return {

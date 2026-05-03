@@ -4,7 +4,7 @@ const { actionOk } = require('../action-result')
 const { getLocalLlmProfile } = require('../ai/local-llm-profiles')
 const { plannerDecisionJsonSchema, validatePlannerDecision } = require('../ai/planner-schema')
 const { skillRegistryToPlannerTools } = require('../ai/tool-adapter')
-const { normalizePlannerDecisionArgs } = require('../ai/providers/provider-utils')
+const { normalizePlannerDecisionArgs } = require('../ai/argument-normalizer')
 const { actionRequiresConfirmation } = require('../ai/planner-runner')
 const {
   buildSystemPrompt,
@@ -183,7 +183,7 @@ function parseArgs (argv) {
   return { json, message }
 }
 
-function printHuman ({ message, profile, rawContent, parsedDecision, normalizedDecision, validation, plan, confirmation, elapsedMs }) {
+function printHuman ({ message, profile, rawContent, parsedDecision, normalizedDecision, normalization, validation, plan, confirmation, elapsedMs }) {
   console.log('Probe LLM local MineGPT')
   console.log(`Mensagem: ${message}`)
   console.log(`Modelo: ${profile.model}`)
@@ -198,6 +198,9 @@ function printHuman ({ message, profile, rawContent, parsedDecision, normalizedD
   console.log('')
   console.log('Decisao normalizada:')
   console.log(JSON.stringify(normalizedDecision, null, 2))
+  console.log('')
+  console.log('Normalizacao:')
+  console.log(JSON.stringify(normalization, null, 2))
   console.log('')
   console.log(`Validacao: ${validation.ok ? 'ok' : validation.errors.join('; ')}`)
   console.log('')
@@ -246,7 +249,8 @@ async function probeLocalLlm ({ message, json = false, fetch = globalThis.fetch 
   const responseData = await requestOllamaChat({ profile, messages, schema, fetch })
   const rawContent = contentFromOllamaResponse(responseData)
   const parsedDecision = parseStrictJsonObject(rawContent)
-  const normalizedDecision = normalizePlannerDecisionArgs(parsedDecision, skills)
+  const normalization = normalizePlannerDecisionArgs(parsedDecision, { skills, plannerState })
+  const normalizedDecision = normalization.decision
   const validation = validatePlannerDecision(normalizedDecision, { skills, plannerState })
 
   let plan = null
@@ -276,6 +280,7 @@ async function probeLocalLlm ({ message, json = false, fetch = globalThis.fetch 
     rawContent,
     parsedDecision,
     normalizedDecision,
+    normalization,
     validation,
     finalAction: normalizedDecision.intent === 'execute_skill' ? normalizedDecision.nextAction : null,
     plan,

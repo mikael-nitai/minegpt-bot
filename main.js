@@ -347,6 +347,8 @@ function setupSkillRegistry ({
     cost: { base: 3, movement: true },
     plannerHints: 'Use depois de minerar ou quando houver itens dropados relevantes por perto.',
     run: async ({ target = null }) => {
+      const startedAt = Date.now()
+      const before = typeof inventory.inventorySnapshot === 'function' ? inventory.inventorySnapshot() : null
       const itemTarget = target ? inventory.normalizeItemTarget(target, 'dropped') : null
       const gains = await collection.collectDropsAround(context.bot.entity.position.clone(), {
         radius: 8,
@@ -355,7 +357,20 @@ function setupSkillRegistry ({
         announce: false,
         target: itemTarget
       })
-      return actionOk('drops.collect', 'drops coletados', { gains })
+      const after = typeof inventory.inventorySnapshot === 'function' ? inventory.inventorySnapshot() : null
+      const inventoryDelta = before && after && typeof inventory.inventoryDeltaBetweenSnapshots === 'function'
+        ? inventory.inventoryDeltaBetweenSnapshots(before, after)
+        : gains.map(item => ({ name: item.name, delta: item.count }))
+      if (gains.length === 0) {
+        return actionFail('drops.collect', target ? `nao coletei drops de ${target}` : 'nao coletei nenhum drop', { target, gains }, startedAt, {
+          code: 'no_drops_collected',
+          retryable: true
+        })
+      }
+      return actionOk('drops.collect', 'drops coletados', { target, gains }, startedAt, {
+        code: 'drops_collected',
+        inventoryDelta
+      })
     }
   })
 
@@ -585,6 +600,8 @@ function start () {
     placementHelpers: null,
     containerHelpers: null,
     collection: null,
+    catalog: minecraftCatalog,
+    minecraftCatalog,
     reconnectBot: null,
     startSkill: null,
     cancelActiveSkill: null,

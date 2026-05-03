@@ -18,6 +18,10 @@ const {
   compactHistoryForLlm,
   createAiRateLimiter,
   configuredRecoveryMode,
+  normalizePlannerDecisionArgs,
+  resolveCollectTargetAlias,
+  resolveContainerModeAlias,
+  resolveItemAlias,
   skillsToPlannerTools,
   skillRegistryToPlannerTools
 } = require('../ai')
@@ -417,7 +421,7 @@ test('schema rejeita skill inexistente e nextAction invalido', () => {
   assert.equal(invalidArgsResult.ok, false)
   assert.match(invalidArgsResult.errors.join('; '), /args deve ser objeto/)
 
-  const invalidStopIntent = makePlannerDecision({
+  const validStopIntent = makePlannerDecision({
     intent: 'stop',
     userGoal: 'para',
     nextAction: null,
@@ -426,9 +430,8 @@ test('schema rejeita skill inexistente e nextAction invalido', () => {
     confidence: 0.8,
     stopAfterThis: true
   })
-  const invalidStopResult = validatePlannerDecision(invalidStopIntent, { skills })
-  assert.equal(invalidStopResult.ok, false)
-  assert.match(invalidStopResult.errors.join('; '), /intent invalida/)
+  const stopResult = validatePlannerDecision(validStopIntent, { skills })
+  assert.equal(stopResult.ok, true)
 
   const invalidCollectTarget = makePlannerDecision({
     intent: 'execute_skill',
@@ -476,7 +479,7 @@ test('schema de planner decision expoe JSON Schema com skills registradas', () =
     plannerState: { allowedActions: { collectTargets: ['oak_log'], collectCategories: ['wood'] } }
   })
   assert.equal(schema.type, 'object')
-  assert.deepEqual(schema.properties.intent.enum, ['execute_skill', 'ask_user', 'refuse'])
+  assert.deepEqual(schema.properties.intent.enum, ['execute_skill', 'ask_user', 'refuse', 'stop'])
   const actionSchema = schema.properties.nextAction.anyOf[1]
   assert(Array.isArray(actionSchema.oneOf))
   assert(actionSchema.oneOf.some(entry => entry.properties.skill.enum.includes('movement.stop')))
@@ -707,7 +710,7 @@ test('compactadores do LLM preservam itens mencionados e historico recente', () 
   assert.equal(compactState.inventory.items[0].name, 'diamond')
 
   const compactSkills = compactSkillsForLlm([{ id: 'x', description: 'ok', inputSchema: {}, risk: 'low', plannerHints: 'hint', run: () => {} }])
-  assert.deepEqual(Object.keys(compactSkills[0]), ['id', 'description', 'inputSchema', 'risk', 'plannerHints'])
+  assert.deepEqual(Object.keys(compactSkills[0]), ['id', 'description', 'whenToUse', 'whenNotToUse', 'inputSchema', 'naturalExamples', 'argsExamples', 'risk', 'plannerHints', 'safetyNotes'])
 
   const compactHistory = compactHistoryForLlm(Array.from({ length: 8 }, (_, index) => ({
     step: index,
@@ -1088,7 +1091,12 @@ test('tool adapter remove funcoes e contexto interno das skills', () => {
     risk: 'medium',
     effects: ['inventory'],
     cost: { base: 2 },
-    plannerHints: 'hint'
+    plannerHints: 'hint',
+    whenToUse: 'hint',
+    whenNotToUse: '',
+    naturalExamples: [],
+    argsExamples: [],
+    safetyNotes: []
   }])
   assert.equal('run' in tools[0], false)
 
@@ -1121,6 +1129,59 @@ test('tool adapter envia schemas claros com enums explicitos', () => {
     required: ['mode'],
     additionalProperties: false
   })
+})
+
+test('skill cards incluem exemplos e contrauso para ambiguidades lexicais', () => {
+  const tools = skillsToPlannerTools([
+    { id: 'movement.stop', description: 'parar', inputSchema: {}, risk: 'low' },
+    { id: 'collection.collect', description: 'coletar', inputSchema: { target: 'string' }, risk: 'medium' },
+    { id: 'containers.deposit', description: 'guardar', inputSchema: { mode: 'target|all|resources|blocks|drops' }, risk: 'medium' }
+  ])
+
+  const stop = tools.find(tool => tool.id === 'movement.stop')
+  assert.match(stop.whenNotToUse, /para frente/)
+  assert.deepEqual(stop.argsExamples[0], {})
+
+  const collect = tools.find(tool => tool.id === 'collection.collect')
+  assert(collect.naturalExamples.some(example => /tronco/.test(example)))
+  assert(collect.argsExamples.some(args => args.target === 'oak_log'))
+
+  const deposit = tools.find(tool => tool.id === 'containers.deposit')
+  assert(deposit.argsExamples.some(args => args.mode === 'blocks'))
+  assert.match(deposit.safetyNotes.join(' '), /mode=all/)
+})
+
+test('aliases semanticos resolvem modos, coleta e crafting comuns', () => {
+  assert.equal(resolveContainerModeAlias('blocos'), 'blocks')
+  assert.equal(resolveContainerModeAlias('building blocks'), 'blocks')
+  assert.equal(resolveContainerModeAlias('recursos'), 'resources')
+  assert.equal(resolveContainerModeAlias('tudo'), 'all')
+  assert.equal(resolveItemAlias('mesa de trabalho'), 'crafting_table')
+  assert.equal(resolveItemAlias('tochas'), 'torch')
+  assert.equal(resolveItemAlias('gravetos'), 'stick')
+  assert.equal(resolveCollectTargetAlias('tronco de árvore de carvalho', {
+    plannerState: { allowedActions: { collectTargets: ['oak_log'] } }
+  }), 'oak_log')
+  assert.equal(resolveCollectTargetAlias('carvão', {
+    plannerState: { allowedActions: { collectTargets: ['coal_ore'] } }
+  }), 'coal_ore')
+})
+
+test('argument normalizer retorna warnings e bloqueia args fatais', () => {
+  const stop = normalizePlannerDecisionArgs(plannerExecuteDecision('movement.stop', { action: 'stop' }), { skills: plannerTools() })
+  assert.equal(stop.changed, true)
+  assert.deepEqual(stop.decision.nextAction.args, {})
+  assert(stop.warnings.some(warning => /args extras/.test(warning)))
+
+  const collect = normalizePlannerDecisionArgs(plannerExecuteDecision('collection.collect', { item: 'tronco de carvalho', amount: '2' }), {
+    skills: plannerTools(),
+    plannerState: { allowedActions: { collectTargets: ['oak_log'] } }
+  })
+  assert.deepEqual(collect.decision.nextAction.args, { target: 'oak_log', count: 2 })
+  assert.equal(collect.fatalErrors.length, 0)
+
+  const invalid = normalizePlannerDecisionArgs(plannerExecuteDecision('crafting.craft', 'torch'), { skills: plannerTools() })
+  assert.match(invalid.fatalErrors.join('; '), /args deve ser objeto/)
 })
 
 test('parser do prefixo bot aceita somente comando oficial', () => {
@@ -1198,6 +1259,86 @@ test('runner rejeita alvo coletavel sintetico fora do vocabulario', async () => 
   assert.equal(response.status, 'plan_failed')
   assert.deepEqual(response.decision.nextAction.args, { target: 'oak_tree', count: 1 })
   assert.match(response.reason, /alvo coletavel desconhecido: oak_tree/)
+})
+
+test('runner bloqueia decisao semanticamente incoerente antes de minerar', async () => {
+  let planned = 0
+  let executed = 0
+  const registry = createSkillRegistry()
+  registry.register({
+    id: 'collection.collect',
+    description: 'coletar',
+    inputSchema: { target: 'string', count: 'number optional' },
+    risk: 'medium',
+    run: () => {
+      executed++
+      return actionOk('collection.collect', 'coletado')
+    }
+  })
+  const originalPlan = registry.plan
+  registry.plan = async (skill, args, context) => {
+    planned++
+    return originalPlan(skill, args, context)
+  }
+
+  for (const userMessage of ['vem aqui', 'caminhe 5 blocos para frente']) {
+    const response = await runPlannerCycles({
+      userMessage,
+      context: {
+        skillRegistry: registry,
+        stateReporter: { getPlannerSnapshot: () => ({ online: true }) },
+        activeSkill: null
+      },
+      survivalGuard: { assess: () => ({ severity: 'low' }) },
+      dryRun: false,
+      decide: async () => plannerExecuteDecision('collection.collect', { target: 'coal_ore', count: 1 }, {
+        userGoal: userMessage,
+        risk: 'medium'
+      })
+    })
+
+    assert.equal(response.status, 'invalid_decision', userMessage)
+    assert.match(response.reason, /decisao incoerente/)
+  }
+
+  assert.equal(planned, 0)
+  assert.equal(executed, 0)
+})
+
+test('runner nao aceita movement.stop para frase de direcao para frente', async () => {
+  let planned = 0
+  const registry = createSkillRegistry()
+  registry.register({
+    id: 'movement.stop',
+    description: 'parar',
+    inputSchema: {},
+    risk: 'low',
+    run: () => actionOk('movement.stop', 'parado')
+  })
+  const originalPlan = registry.plan
+  registry.plan = async (skill, args, context) => {
+    planned++
+    return originalPlan(skill, args, context)
+  }
+
+  const response = await runPlannerCycles({
+    userMessage: 'caminhe 5 blocos para frente',
+    context: {
+      skillRegistry: registry,
+      stateReporter: { getPlannerSnapshot: () => ({ online: true }) },
+      activeSkill: null
+    },
+    survivalGuard: { assess: () => ({ severity: 'low' }) },
+    dryRun: false,
+    decide: async () => plannerExecuteDecision('movement.stop', {}, {
+      userGoal: 'caminhe 5 blocos para frente',
+      risk: 'low'
+    })
+  })
+
+  assert.equal(response.status, 'invalid_decision')
+  assert.match(response.reason, /decisao incoerente/)
+  assert.equal(planned, 0)
 })
 
 test('runner normaliza aliases de deposito antes do plan sem esconder skill invalida', async () => {

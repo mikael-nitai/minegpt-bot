@@ -1,4 +1,4 @@
-const { actionOk, actionFail } = require('./action-result')
+const { actionOk, actionFail, itemRequirement } = require('./action-result')
 
 const PLACE_SKILL_ID = 'blocks.place'
 const MAX_PLACE_DISTANCE = 16
@@ -69,6 +69,7 @@ function createPlacementHelpers ({
   getBot,
   Vec3,
   catalog,
+  inventory,
   goals,
   withTimeout,
   owner,
@@ -329,19 +330,45 @@ function createPlacementHelpers ({
   async function placeByRequest (request) {
     const current = bot()
     const startedAt = Date.now()
-    if (getActiveSkill()) return actionFail(PLACE_SKILL_ID, `ja estou executando ${getActiveSkill().name}`, {}, startedAt)
+    if (getActiveSkill()) {
+      return actionFail(PLACE_SKILL_ID, `ja estou executando ${getActiveSkill().name}`, {}, startedAt, {
+        code: 'active_skill_busy',
+        retryable: true
+      })
+    }
 
     const risk = immediateRisk()
-    if (risk) return actionFail(PLACE_SKILL_ID, `nao vou colocar bloco agora: ${risk}`, {}, startedAt)
+    if (risk) {
+      return actionFail(PLACE_SKILL_ID, `nao vou colocar bloco agora: ${risk}`, { risk }, startedAt, {
+        code: 'unsafe_area',
+        retryable: true
+      })
+    }
 
     const resolved = resolvePlaceBlockItem(request.target)
-    if (!resolved.ok) return actionFail(PLACE_SKILL_ID, resolved.reason, {}, startedAt)
+    if (!resolved.ok) {
+      return actionFail(PLACE_SKILL_ID, resolved.reason, { target: request.target }, startedAt, {
+        code: /nao tenho/.test(resolved.reason) ? 'missing_block' : 'unknown_block',
+        retryable: /nao tenho/.test(resolved.reason),
+        missingRequirements: /nao tenho/.test(resolved.reason) ? [itemRequirement(request.target || 'bloco', 1)] : []
+      })
+    }
 
     const initialSelection = selectPlacementPosition(request)
-    if (!initialSelection.ok) return actionFail(PLACE_SKILL_ID, initialSelection.reason, { checked: initialSelection.checked }, startedAt)
+    if (!initialSelection.ok) {
+      return actionFail(PLACE_SKILL_ID, initialSelection.reason, { checked: initialSelection.checked }, startedAt, {
+        code: 'invalid_position',
+        retryable: true
+      })
+    }
 
     const skill = startSkill('colocar_bloco')
-    if (!skill) return actionFail(PLACE_SKILL_ID, `ja estou executando ${getActiveSkill()?.name || 'outra skill'}`, {}, startedAt)
+    if (!skill) {
+      return actionFail(PLACE_SKILL_ID, `ja estou executando ${getActiveSkill()?.name || 'outra skill'}`, {}, startedAt, {
+        code: 'active_skill_busy',
+        retryable: true
+      })
+    }
 
     getNavigationController()?.stop?.('skill colocar bloco')
 
@@ -356,6 +383,7 @@ function createPlacementHelpers ({
       const selection = selectPlacementPosition(request)
       if (!selection.ok) throw new Error(selection.reason)
 
+      const before = inventory.inventorySnapshot?.()
       const item = current.inventory.items().find(stack => stack.name === resolved.item.name)
       if (!item) throw new Error(`nao tenho mais ${resolved.item.name}`)
 
@@ -377,6 +405,10 @@ function createPlacementHelpers ({
       }
 
       const pos = selection.position
+      const after = inventory.inventorySnapshot?.()
+      const inventoryDelta = before && after && inventory.inventoryDeltaBetweenSnapshots
+        ? inventory.inventoryDeltaBetweenSnapshots(before, after)
+        : [{ name: placed.name, delta: -1 }]
       return actionOk(
         PLACE_SKILL_ID,
         `Coloquei ${placed.name} em ${pos.x} ${pos.y} ${pos.z}.`,
@@ -385,10 +417,27 @@ function createPlacementHelpers ({
           position: { x: pos.x, y: pos.y, z: pos.z },
           support: selection.support.supportName
         },
-        startedAt
+        startedAt,
+        {
+          code: 'placed',
+          worldChanged: true,
+          inventoryDelta
+        }
       )
     } catch (err) {
-      return actionFail(PLACE_SKILL_ID, err.message, { target: request }, startedAt)
+      return actionFail(PLACE_SKILL_ID, err.message, { target: request }, startedAt, {
+        code: /nao tenho mais/.test(err.message)
+          ? 'missing_block'
+          : /risco|vida|lava|perto/.test(err.message)
+              ? 'unsafe_area'
+              : /longe/.test(err.message)
+                  ? 'target_too_far'
+                  : /confirmei/.test(err.message)
+                      ? 'placement_not_confirmed'
+                      : 'placement_failed',
+        retryable: true,
+        missingRequirements: /nao tenho mais/.test(err.message) ? [itemRequirement(request.target || 'bloco', 1)] : []
+      })
     } finally {
       current.pathfinder.stop()
       current.clearControlStates()

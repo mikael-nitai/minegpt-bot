@@ -364,6 +364,28 @@ MINEGPT_AI_PROVIDER=rule_based npm start
 
 O provider `ollama` usa apenas o servidor local do Ollama. Ele envia estado compacto, skills seguras, historico curto e um JSON Schema para `/api/chat` com structured outputs. Para comandos naturais, o bot usa sempre o provider configurado: se `MINEGPT_AI_PROVIDER=ollama`, a mensagem vai direto ao Ollama, sem pre-filtro `rule_based`. Se o Ollama estiver offline e `MINEGPT_AI_FALLBACK_PROVIDER=rule_based` ou `mock` estiver configurado, o bot cai para esse provider local e registra provider solicitado, erro, fallback usado e decisao final; se nao houver fallback, ele responde erro claro e nao executa acao.
 
+O contrato do planner e sempre JSON estruturado:
+
+```json
+{
+  "intent": "execute_skill",
+  "userGoal": "pegar madeira",
+  "nextAction": {
+    "skill": "collection.collect",
+    "args": { "target": "oak_log", "count": 1 }
+  },
+  "reasonSummary": "Coletar madeira proxima.",
+  "askUser": null,
+  "risk": "medium",
+  "confidence": 0.82,
+  "stopAfterThis": true
+}
+```
+
+Antes de qualquer `SkillRegistry.plan()`, a decisao passa por validacao e normalizacao segura de argumentos em `ai/argument-normalizer.js`. Essa camada corrige apenas formatos e aliases conhecidos, como `movement.stop` com args extras, `guardar blocos` para `{ "mode": "blocks" }`, `mesa de trabalho` para `crafting_table`, `tochas` para `torch`, `tronco de carvalho` para `oak_log` quando o estado permitir. Erros fatais ou skill inexistente nunca executam.
+
+As skills enviadas ao LLM sao "skill cards" compactos gerados por `ai/tool-adapter.js`. Cada card contem id, descricao, quando usar, quando nao usar, schema de entrada, exemplos naturais, exemplos de args corretos, risco e notas de seguranca. Isso evita que o LLM dependa de substring matching e deixa casos como `para frente` separados de `pare/parar`.
+
 Ao iniciar com provider `ollama`, o bot dispara um warmup assíncrono do modelo. Enquanto o warmup estiver em andamento, uma falha inicial do Ollama nao cai para fallback automaticamente; o bot pede para tentar novamente em alguns segundos para evitar uma decisao divergente do `rule_based`. Por padrao, `keep_alive=24h` mantem o modelo carregado durante uma sessao longa do bot, reduzindo latencia e evitando reload depois de alguns minutos sem comandos. Para alterar isso, configure `MINEGPT_AI_KEEP_ALIVE` ou `ai.ollama.keep_alive`.
 
 Nao ha modo `hybrid` como padrao. Se um modo hibrido for criado no futuro, ele deve ser opt-in e experimental, nunca o interpretador automatico antes do Ollama.
@@ -403,7 +425,17 @@ Para depurar o payload enviado ao LLM local, use:
 MINEGPT_AI_DEBUG=1 MINEGPT_AI_PROVIDER=ollama MINEGPT_AI_FALLBACK_PROVIDER=rule_based npm start
 ```
 
-Com debug ativo, o console mostra tamanho aproximado do payload em caracteres, numero de skills enviadas, modelo, perfil, tempo da chamada Ollama e status de parse/validacao. Sem `MINEGPT_AI_DEBUG=1`, esses logs ficam desativados.
+Com debug ativo, o console mostra provider solicitado/efetivo, fallback usado, modelo, perfil, timeout, tamanho aproximado do payload, decisao bruta, argumentos antes/depois da normalizacao, resultado de `plan()` e resultado de `execute()`. Sem `MINEGPT_AI_DEBUG=1`, esses logs ficam desativados.
+
+Flags adicionais:
+
+```bash
+MINEGPT_AI_DEBUG_PAYLOAD=1
+MINEGPT_AI_DEBUG_RAW=1
+MINEGPT_AI_SAVE_DEBUG=1
+```
+
+`MINEGPT_AI_DEBUG_PAYLOAD=1` mostra o payload compacto completo no console. `MINEGPT_AI_DEBUG_RAW=1` mostra a resposta bruta do Ollama. `MINEGPT_AI_SAVE_DEBUG=1` salva artefatos em `logs/`, que fica ignorado pelo Git.
 
 ### Benchmark local do planner
 
@@ -435,7 +467,7 @@ npm run llm:bench:equilibrio
 npm run llm:bench:performance
 ```
 
-O resumo mostra modelo, perfil, tempo medio, p95 simples, maior tempo, taxa de JSON valido, taxa de decisoes validas, skills existentes e argumentos coerentes. Use `economia` quando a latencia/VRAM pesar, `equilibrio` como padrao de uso e `performance` para medir se mais contexto melhora decisoes sem custo excessivo.
+O resumo mostra modelo, perfil, tempo medio, p95 simples, maior tempo, taxa de JSON valido, taxa de decisoes validas, skills existentes, argumentos coerentes, estimativa de `plan.ok`, se o dry-run passaria, e se houve normalizacao de argumentos. Use `economia` quando a latencia/VRAM pesar, `equilibrio` como padrao de uso e `performance` para medir se mais contexto melhora decisoes sem custo excessivo.
 
 Se o Ollama estiver offline ou o modelo estiver ausente, o script imprime diagnostico e sugestoes como `npm run llm:check`, `ollama serve` e `npm run llm:pull`, sem quebrar o projeto.
 
@@ -459,6 +491,9 @@ Se o Ollama estiver offline ou o modelo estiver ausente, o script imprime diagno
 - `action-result.js`: resultado padronizado de acoes, com codigos, severidade, retry, requisitos faltantes e sugestoes para planner.
 - `state.js`: snapshot estruturado do estado do bot.
 - `ai/`: schema de decisao do planner, adapter seguro de skills e providers locais de planner.
+- `ai/argument-normalizer.js`: normalizacao segura e rastreavel de argumentos escolhidos por provider.
+- `ai/semantic-aliases.js`: aliases semanticos entre portugues natural, modos logisticos e ids tecnicos.
+- `docs/ARCHITECTURE_REFACTOR_PLAN.md`: plano vivo da refatoracao arquitetural do planner.
 - `AGENT_MAP.md`: mapa operacional para agentes de codigo depurarem e evoluirem o projeto.
 - `scripts/`: smoke tests e checagem sintatica.
 - `test/`: testes unitarios com `node:test`.

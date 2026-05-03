@@ -1,6 +1,16 @@
 const { getPlannerProvider, getFallbackPlannerProvider } = require('./providers')
 const { askUserDecision, normalizeText, validateOrAsk } = require('./providers/provider-utils')
 const { defaultAiRateLimiter, getAiMaxCallsPerMinute } = require('./planner-limits')
+const { getLocalLlmProfile } = require('./local-llm-profiles')
+
+function debugEnabled (env = process.env) {
+  return env.MINEGPT_AI_DEBUG === '1'
+}
+
+function debugLog (env, event, details) {
+  if (!debugEnabled(env)) return
+  console.log(`[minegpt-ai] ${event}: ${JSON.stringify(details)}`)
+}
 
 function shortErrorMessage (error) {
   return String(error?.message || error || 'erro desconhecido').slice(0, 180)
@@ -30,8 +40,20 @@ async function decideNextAction ({
   rateLimiter = defaultAiRateLimiter
 }) {
   const provider = getPlannerProvider(config, env)
+  const profile = getLocalLlmProfile(config, env)
+  const startedAt = Date.now()
   let decision
   const userGoal = String(userMessage || '').trim() || 'comando vazio'
+
+  debugLog(env, 'provider_start', {
+    requested: provider.requestedName || provider.name,
+    effective: provider.name,
+    fallbackReason: provider.fallbackReason || null,
+    configuredFallback: config.ai?.fallbackProvider || config.ai?.fallback_provider || env.MINEGPT_AI_FALLBACK_PROVIDER || null,
+    model: profile.model,
+    profile: profile.name,
+    timeoutMs: profile.timeoutMs
+  })
 
   const shouldRateLimit = provider.name === 'ollama' && (!fetch || rateLimiter !== defaultAiRateLimiter)
   if (shouldRateLimit) {
@@ -60,6 +82,14 @@ async function decideNextAction ({
 
   try {
     decision = await provider.decideNextAction({ userMessage, plannerState, skills, history, config, env, fetch, signal })
+    debugLog(env, 'provider_result', {
+      requested: provider.requestedName || provider.name,
+      effective: decision?.planner?.mode || provider.name,
+      fallbackUsed: false,
+      durationMs: Date.now() - startedAt,
+      intent: decision?.intent,
+      skill: decision?.nextAction?.skill || null
+    })
   } catch (error) {
     if (error?.code === 'aborted') {
       const abortedDecision = askUserDecision(
@@ -103,6 +133,16 @@ async function decideNextAction ({
         error,
         fallbackProviderName: fallbackProvider.name,
         finalProviderName: fallbackDecision.planner?.mode || fallbackProvider.name
+      })
+      debugLog(env, 'provider_result', {
+        requested: provider.requestedName || provider.name,
+        effective: fallbackDecision.planner?.mode || fallbackProvider.name,
+        fallbackUsed: true,
+        fallback: fallbackProvider.name,
+        reason: providerFallback,
+        durationMs: Date.now() - startedAt,
+        intent: fallbackDecision.intent,
+        skill: fallbackDecision.nextAction?.skill || null
       })
       return {
         ...fallbackDecision,

@@ -49,6 +49,9 @@ index.js
 - `action-result.js`: formato padrao de resultado de acoes.
 - `state.js`: snapshot estruturado para debug e snapshot compacto para planner.
 - `ai/`: fundacao da camada de planner; valida decisao, adapta skills para ferramentas seguras, executa ciclos curtos pelo runner e possui planner mockado sem API externa.
+- `ai/argument-normalizer.js`: normaliza argumentos de decisoes do provider antes de `SkillRegistry.plan()`, com warnings, erros recuperaveis e erros fatais.
+- `ai/semantic-aliases.js`: aliases semanticos para itens/blocos/modos usados pelo planner e normalizer.
+- `docs/ARCHITECTURE_REFACTOR_PLAN.md`: registro do plano, decisoes e pendencias da refatoracao arquitetural do planner.
 - `utils.js`: helpers pequenos compartilhados.
 - `scripts/`: smoke tests e checagem sintatica.
 - `test/`: testes unitarios com `node:test`.
@@ -181,12 +184,16 @@ commands.js detecta prefixo "bot"
   -> ai/planner.js decide uma proxima acao
   -> recebe userMessage, plannerState, tools e history
   -> ai/planner-schema.js valida formato, skill existente e args
+  -> ai/argument-normalizer.js corrige aliases e formatos seguros
+  -> ai/planner-schema.js valida novamente com estado e skills
   -> SkillRegistry.plan()
   -> SkillRegistry.execute()
   -> resposta curta no chat
 ```
 
-O planner atual nao chama API externa. Ele nao executa diretamente Mineflayer; execucao passa pelo `SkillRegistry`. O runner limita uma acao por comando por padrao, aceita ciclos curtos via `maxSteps`, registra history compacta por comando e para em `ask_user`, `stop`, falha de plan/execute, risco de survival, activeSkill inesperada ou repeticao da mesma acao.
+O planner usa provider configurado (`ollama`, `rule_based` ou `mock`). Ele nao executa diretamente Mineflayer; execucao passa pelo `SkillRegistry`. O runner limita uma acao por comando por padrao, aceita ciclos curtos via `maxSteps`, registra history compacta por comando e para em `ask_user`, `stop`, falha de plan/execute, risco de survival, activeSkill inesperada ou repeticao da mesma acao.
+
+Quando `MINEGPT_AI_PROVIDER=ollama`, linguagem natural vai direto ao Ollama; `rule_based` so entra como provider explicito ou fallback configurado.
 
 ### Coleta/Mining
 
