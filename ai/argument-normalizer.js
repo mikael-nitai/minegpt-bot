@@ -21,6 +21,15 @@ function cloneDecision (decision) {
   }
 }
 
+const NO_ARG_SKILLS = new Set([
+  'movement.stop',
+  'movement.come_here',
+  'movement.follow_owner',
+  'state.snapshot',
+  'state.planner_snapshot',
+  'survival.status'
+])
+
 function normalizeCount (value, warnings, field = 'count') {
   if (value == null || value === '') return null
   const number = Number(value)
@@ -33,6 +42,11 @@ function normalizeCount (value, warnings, field = 'count') {
 
 function normalizeMovementStopArgs (args, warnings) {
   if (Object.keys(args).length > 0) warnings.push('movement.stop nao aceita argumentos; args extras removidos')
+  return {}
+}
+
+function normalizeNoArgSkillArgs (skillId, args, warnings) {
+  if (Object.keys(args).length > 0) warnings.push(`${skillId} nao aceita argumentos; args extras removidos`)
   return {}
 }
 
@@ -187,20 +201,17 @@ function normalizePlannerDecisionArgs (decision, options = {}) {
   }
 
   if (action.args != null && !isPlainObject(action.args)) {
-    if (action.skill === 'movement.stop') {
-      warnings.push('movement.stop recebeu args nao objeto; convertido para {}')
-      action.args = {}
-    } else {
-      fatalErrors.push(`${action.skill}.args deve ser objeto`)
-      return { decision: normalized, warnings, recoverableErrors, fatalErrors, changed: false }
-    }
+    fatalErrors.push(`${action.skill}.args deve ser objeto`)
+    return { decision: normalized, warnings, recoverableErrors, fatalErrors, changed: false }
   }
 
   const before = JSON.stringify(action.args || {})
   const args = isPlainObject(action.args) ? action.args : {}
 
-  if (action.skill === 'movement.stop') {
-    action.args = normalizeMovementStopArgs(args, warnings)
+  if (NO_ARG_SKILLS.has(action.skill)) {
+    action.args = action.skill === 'movement.stop'
+      ? normalizeMovementStopArgs(args, warnings)
+      : normalizeNoArgSkillArgs(action.skill, args, warnings)
   } else if (action.skill === 'containers.deposit') {
     action.args = normalizeDepositArgs(args, warnings, recoverableErrors)
   } else if (action.skill === 'collection.collect') {

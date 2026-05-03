@@ -113,7 +113,7 @@ async function decideNextAction ({
           stopAfterThis: true
         })
       : askUserDecision(userGoal, 'O que voce quer que eu guarde: blocos, recursos, drops ou tudo?', 'Deposito em container sem modo claro.')
-  } else if (hasAny(text, ['faz', 'fazer', 'crafta', 'craftar', 'crafte'])) {
+  } else if (hasAny(text, ['faz', 'fazer', 'faca', 'crafta', 'craftar', 'crafte'])) {
     const target = craftTargetFromText(text)
     decision = target
       ? executionDecision({
@@ -126,7 +126,7 @@ async function decideNextAction ({
           stopAfterThis: true
         })
       : askUserDecision(userGoal, 'Qual item voce quer que eu crafte?', 'Crafting sem alvo claro.')
-  } else if (hasAny(text, ['pega', 'pegar', 'coleta', 'coletar', 'minera', 'minerar'])) {
+  } else if (hasAny(text, ['pega', 'pegar', 'coleta', 'colete', 'coletar', 'minera', 'minerar'])) {
     const target = targetFromText(text)
     decision = target
       ? executionDecision({

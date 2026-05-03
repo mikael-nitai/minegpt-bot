@@ -1,14 +1,17 @@
 const { decideNextAction } = require('./planner')
-const { validatePlannerDecision } = require('./planner-schema')
+const { validatePlannerDecision, validatePlannerDecisionStructure } = require('./planner-schema')
 const { skillRegistryToPlannerTools } = require('./tool-adapter')
 const { getSkillsCacheTtlMs } = require('./planner-limits')
 const { normalizePlannerDecisionArgs } = require('./argument-normalizer')
+const { traceLog } = require('./providers/provider-utils')
 
 const DEFAULT_ALLOWED_RISKS = ['low', 'medium']
 const DEFAULT_MAX_STEPS = 1
 const HARD_MAX_STEPS = 3
 const DEFAULT_RECOVERY_MODE = 'local'
 const VALID_RECOVERY_MODES = new Set(['off', 'local', 'llm'])
+const DEFAULT_SEMANTIC_GUARD_MODE = 'warn'
+const VALID_SEMANTIC_GUARD_MODES = new Set(['off', 'warn', 'strict'])
 const VALUABLE_ITEM_NAMES = new Set([
   'diamond',
   'emerald',
@@ -95,6 +98,24 @@ function semanticGuardForDecision (userMessage, decision) {
   }
 
   return null
+}
+
+function normalizeSemanticGuardMode (mode) {
+  const normalized = String(mode || '')
+    .trim()
+    .toLowerCase()
+    .replace(/-/g, '_')
+  return VALID_SEMANTIC_GUARD_MODES.has(normalized) ? normalized : DEFAULT_SEMANTIC_GUARD_MODE
+}
+
+function configuredSemanticGuardMode (config = {}, env = process.env) {
+  return normalizeSemanticGuardMode(
+    env.MINEGPT_AI_SEMANTIC_GUARD ||
+    config.ai?.semanticGuard ||
+    config.ai?.semantic_guard ||
+    config.semanticGuard ||
+    DEFAULT_SEMANTIC_GUARD_MODE
+  )
 }
 
 function compactDecision (decision) {
@@ -438,6 +459,7 @@ async function runPlannerCycles ({
   const allowedRiskSet = new Set(allowedRisks)
   const stepLimit = normalizeMaxSteps(maxSteps)
   const recoveryMode = configuredRecoveryMode(safeContext.config || {}, env)
+  const semanticGuardMode = configuredSemanticGuardMode(safeContext.config || {}, env)
   const runHistory = Array.isArray(history) ? history.slice(-5) : []
   const repeatedActions = new Set()
   const failedActionSignatures = new Set()
@@ -463,8 +485,14 @@ async function runPlannerCycles ({
       provider: rawDecision?.planner?.mode || null,
       fallback: rawDecision?.planner?.providerFallback || null
     })
+    traceLog(env, 'decision_from_provider', {
+      decision: compactDecision(rawDecision),
+      provider: rawDecision?.planner?.mode || null,
+      fallback: rawDecision?.planner?.providerFallback || null
+    })
 
-    const rawValidation = validatePlannerDecision(rawDecision, { skills, plannerState })
+    const rawValidation = validatePlannerDecisionStructure(rawDecision, { skills, plannerState })
+    traceLog(env, 'validation_initial', { ok: rawValidation.ok, errors: rawValidation.errors })
     const canAttemptNormalization = rawDecision?.intent === 'execute_skill' &&
       rawDecision.nextAction &&
       typeof rawDecision.nextAction.skill === 'string' &&
@@ -501,6 +529,13 @@ async function runPlannerCycles ({
       skill: decision?.nextAction?.skill || null,
       args: decision?.nextAction?.args || null
     })
+    traceLog(env, 'decision_normalized', {
+      decision: compactDecision(decision),
+      changed: normalization.changed,
+      warnings: normalization.warnings,
+      recoverableErrors: normalization.recoverableErrors,
+      fatalErrors: normalization.fatalErrors
+    })
 
     if (normalization.fatalErrors.length > 0) {
       const reason = normalization.fatalErrors.join('; ')
@@ -509,6 +544,7 @@ async function runPlannerCycles ({
     }
 
     const validation = validatePlannerDecision(decision, { skills, plannerState })
+    traceLog(env, 'validation_final', { ok: validation.ok, errors: validation.errors })
     if (!validation.ok) {
       runHistory.push({ step, decision: compactDecision(decision), status: 'invalid_decision', reason: validation.errors.join('; ') })
       return stopRun({ status: 'invalid_decision', reason: validation.errors.join('; '), steps: step, history: runHistory, decision })
@@ -533,10 +569,27 @@ async function runPlannerCycles ({
     }
 
     const nextAction = decision.nextAction
-    const semanticGuardReason = semanticGuardForDecision(userMessage, decision)
+    const rawSemanticGuardReason = semanticGuardForDecision(userMessage, decision)
+    const semanticGuardReason = semanticGuardMode === 'off' ? null : rawSemanticGuardReason
+    const semanticGuardResult = {
+      mode: semanticGuardMode,
+      ok: !semanticGuardReason,
+      warning: semanticGuardMode === 'warn' ? semanticGuardReason || null : null,
+      blocked: Boolean(semanticGuardReason && semanticGuardMode === 'strict'),
+      reason: semanticGuardReason || null
+    }
+    traceLog(env, 'semantic_guard', semanticGuardResult)
     if (semanticGuardReason) {
-      runHistory.push({ step, decision: compactDecision(decision), status: 'invalid_decision', reason: semanticGuardReason })
-      return stopRun({ status: 'invalid_decision', reason: semanticGuardReason, steps: step, history: runHistory, decision })
+      if (decision?.planner) {
+        decision.planner = {
+          ...decision.planner,
+          semanticGuard: semanticGuardResult
+        }
+      }
+      if (semanticGuardMode === 'strict') {
+        runHistory.push({ step, decision: compactDecision(decision), status: 'invalid_decision', reason: semanticGuardReason })
+        return stopRun({ status: 'invalid_decision', reason: semanticGuardReason, steps: step, history: runHistory, decision })
+      }
     }
 
     const plannedSkill = skillRegistry.get(nextAction.skill)
@@ -580,6 +633,7 @@ async function runPlannerCycles ({
     const plan = await skillRegistry.plan(nextAction.skill, nextAction.args, executionContext)
     latestPlan = plan
     debugLog(env, 'plan_result', compactPlan(plan))
+    traceLog(env, 'plan_result', compactPlan(plan))
     if (!plan.ok) {
       const reason = plan.reason || plan.code || 'plan falhou'
       runHistory.push({ step, decision: compactDecision(decision), plan: compactPlan(plan), status: 'plan_failed', reason })
@@ -625,6 +679,7 @@ async function runPlannerCycles ({
     const result = await skillRegistry.execute(nextAction.skill, nextAction.args, executionContext)
     latestResult = result
     debugLog(env, 'execute_result', compactActionResult(result))
+    traceLog(env, 'execute_result', compactActionResult(result))
     runHistory.push({
       step,
       decision: compactDecision(decision),
@@ -778,8 +833,12 @@ module.exports = {
   configuredRecoveryMode,
   failureSignature,
   normalizeRecoveryMode,
+  configuredSemanticGuardMode,
+  normalizeSemanticGuardMode,
+  semanticGuardForDecision,
   DEFAULT_ALLOWED_RISKS,
   DEFAULT_MAX_STEPS,
   DEFAULT_RECOVERY_MODE,
+  DEFAULT_SEMANTIC_GUARD_MODE,
   HARD_MAX_STEPS
 }

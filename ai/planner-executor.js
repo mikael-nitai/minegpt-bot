@@ -17,6 +17,7 @@ const {
   resolveProfileName
 } = require('./local-llm-profiles')
 const { makePlannerDecision } = require('./planner-schema')
+const { traceLog } = require('./providers/provider-utils')
 
 const DEFAULT_CONFIRMATION_TTL_MS = 30000
 
@@ -45,6 +46,16 @@ function summarizePlan (run) {
   if (!action) return run?.reason || 'nenhuma acao planejada'
   const description = plan?.description ? `${plan.description}; ` : ''
   return `${description}faria ${action.skill} com args ${formatArgs(action.args)}`
+}
+
+function plannerChatResponse (run, chat, env = process.env) {
+  traceLog(env, 'final_chat_status', {
+    ok: Boolean(run?.ok),
+    status: run?.status || null,
+    reason: run?.reason || null,
+    chat
+  })
+  return { ...run, chat }
 }
 
 function normalizeDiagnosticText (userMessage) {
@@ -347,6 +358,7 @@ async function runPlannerCommand ({
   now = Date.now(),
   confirmationTtlMs = DEFAULT_CONFIRMATION_TTL_MS
 }) {
+  traceLog(env, 'user_message', { userMessage })
   const control = parsePlannerControlCommand(userMessage)
   if (control?.kind === 'stop') {
     if (context?.plannerDecisionAbortController && !context.plannerDecisionAbortController.signal?.aborted) {
@@ -365,40 +377,42 @@ async function runPlannerCommand ({
       requireConfirmation: false,
       env
     })
-    return stopRun.ok
-      ? { ...stopRun, chat: `Bot: ${summarizeActionResult(stopRun.result)}` }
-      : { ...stopRun, chat: `Bot: não consegui parar via planner — ${stopRun.reason || stopRun.status}.` }
+    return plannerChatResponse(
+      stopRun,
+      stopRun.ok
+        ? `Bot: ${summarizeActionResult(stopRun.result)}`
+        : `Bot: não consegui parar via planner — ${stopRun.reason || stopRun.status}.`,
+      env
+    )
   }
 
   if (control?.kind === 'confirm') {
-    return confirmPendingPlannerAction({ context, survivalGuard, now })
+    const confirmed = await confirmPendingPlannerAction({ context, survivalGuard, now })
+    return plannerChatResponse(confirmed, confirmed.chat, env)
   }
 
   if (control?.kind === 'confirm_extra') {
-    return {
+    return plannerChatResponse({
       ok: false,
       status: 'confirmation_invalid',
-      chat: 'Bot: use apenas "bot confirmar" para confirmar a acao pendente atual.'
-    }
+    }, 'Bot: use apenas "bot confirmar" para confirmar a acao pendente atual.', env)
   }
 
   if (control?.kind === 'cancel') {
     const hadPending = Boolean(context?.plannerPendingConfirmation)
     clearPendingConfirmation(context)
-    return {
+    return plannerChatResponse({
       ok: true,
       status: 'confirmation_cancelled',
-      chat: hadPending ? 'Bot: acao pendente cancelada.' : 'Bot: nao havia acao pendente.'
-    }
+    }, hadPending ? 'Bot: acao pendente cancelada.' : 'Bot: nao havia acao pendente.', env)
   }
 
   if (control?.kind === 'dry_run') {
     if (!control.userMessage) {
-      return {
+      return plannerChatResponse({
         ok: false,
         status: 'dry_run_empty',
-        chat: 'Bot: use "bot plano <pedido>".'
-      }
+      }, 'Bot: use "bot plano <pedido>".', env)
     }
 
     const dryRunResult = await runPlannerCycles({
@@ -414,18 +428,16 @@ async function runPlannerCommand ({
     })
 
     if (dryRunResult.status === 'dry_run') {
-      return {
-        ...dryRunResult,
-        chat: `Bot: plano — ${summarizePlan(dryRunResult)}. Nada foi executado.`
-      }
+      return plannerChatResponse(dryRunResult, `Bot: plano — ${summarizePlan(dryRunResult)}. Nada foi executado.`, env)
     }
 
-    return {
-      ...dryRunResult,
-      chat: dryRunResult.ok
+    return plannerChatResponse(
+      dryRunResult,
+      dryRunResult.ok
         ? `Bot: plano — ${dryRunResult.reason || 'concluido sem executar'}.`
-        : `Bot: nao consegui montar um plano — ${dryRunResult.reason || dryRunResult.status}.`
-    }
+        : `Bot: nao consegui montar um plano — ${dryRunResult.reason || dryRunResult.status}.`,
+      env
+    )
   }
 
   const diagnostic = parsePlannerDiagnosticCommand(userMessage)
@@ -434,7 +446,7 @@ async function runPlannerCommand ({
       ? `Bot: ${await describePlannerProvider(context, env, { fetch: diagnosticFetch })}`
       : runtimeChangeResponse(diagnostic, context, env)
 
-    return {
+    return plannerChatResponse({
       ok: true,
       status: 'llm_diagnostic',
       reason: 'diagnostico local de planner',
@@ -442,9 +454,8 @@ async function runPlannerCommand ({
       history: [],
       decision: null,
       plan: null,
-      result: null,
-      chat
-    }
+      result: null
+    }, chat, env)
   }
 
   const controller = typeof globalThis.AbortController === 'function' ? new globalThis.AbortController() : null
@@ -471,54 +482,55 @@ async function runPlannerCommand ({
   }
 
   if (run.status === 'ask_user') {
-    return { ...run, chat: `Bot: ${run.reason || 'Preciso de mais informacao.'}` }
+    return plannerChatResponse(run, `Bot: ${run.reason || 'Preciso de mais informacao.'}`, env)
   }
 
   if (run.status === 'completed' || run.status === 'max_steps_reached') {
-    return { ...run, chat: `Bot: ${summarizeActionResult(run.result)}` }
+    return plannerChatResponse(run, `Bot: ${summarizeActionResult(run.result)}`, env)
   }
 
   if (run.status === 'dry_run') {
-    return { ...run, chat: `Bot: feito — ${run.reason}.` }
+    return plannerChatResponse(run, `Bot: feito — ${run.reason}.`, env)
   }
 
   if (run.status === 'confirmation_required') {
     const pending = createPendingConfirmation(run, now, confirmationTtlMs)
     if (!pending.action) {
-      return { ...run, chat: 'Bot: acao sensivel sem detalhes suficientes; nao vou executar.' }
+      return plannerChatResponse(run, 'Bot: acao sensivel sem detalhes suficientes; nao vou executar.', env)
     }
     context.plannerPendingConfirmation = pending
-    return { ...run, chat: formatConfirmationPrompt(pending) }
+    return plannerChatResponse(run, formatConfirmationPrompt(pending), env)
   }
 
   if (run.status === 'execute_failed' || run.status === 'execute_failed_retryable') {
-    return { ...run, chat: `Bot: ${summarizeActionResult(run.result)}` }
+    return plannerChatResponse(run, `Bot: ${summarizeActionResult(run.result)}`, env)
   }
 
   if (run.status === 'stopped') {
-    return { ...run, chat: `Bot: ${run.reason || 'parando.'}` }
+    return plannerChatResponse(run, `Bot: ${run.reason || 'parando.'}`, env)
   }
 
   if (run.status === 'refused') {
-    return { ...run, chat: `Bot: não vou fazer isso agora — ${run.reason || 'pedido recusado'}.` }
+    return plannerChatResponse(run, `Bot: não vou fazer isso agora — ${run.reason || 'pedido recusado'}.`, env)
   }
 
   if (run.status === 'invalid_decision' || run.status === 'unknown_skill') {
-    return { ...run, chat: `Bot: não consegui montar uma ação válida — ${run.reason}.` }
+    return plannerChatResponse(run, `Bot: não consegui montar uma ação válida — ${run.reason}.`, env)
   }
 
   if (run.status === 'plan_failed') {
-    return { ...run, chat: `Bot: não vou fazer isso agora — ${run.reason}.` }
+    return plannerChatResponse(run, `Bot: não vou fazer isso agora — ${run.reason}.`, env)
   }
 
   if (run.status === 'active_skill_blocked' || run.status === 'survival_blocked' || run.status === 'risk_blocked' || run.status === 'repetition_blocked') {
-    return { ...run, chat: `Bot: não vou fazer isso agora — ${run.reason}.` }
+    return plannerChatResponse(run, `Bot: não vou fazer isso agora — ${run.reason}.`, env)
   }
 
-  return {
-    ...run,
-    chat: run.ok ? `Bot: feito — ${run.reason}.` : `Bot: não consegui — ${run.reason || run.status}.`
-  }
+  return plannerChatResponse(
+    run,
+    run.ok ? `Bot: feito — ${run.reason}.` : `Bot: não consegui — ${run.reason || run.status}.`,
+    env
+  )
 }
 
 module.exports = {

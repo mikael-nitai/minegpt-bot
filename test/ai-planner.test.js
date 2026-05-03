@@ -11,12 +11,15 @@ const {
   makePlannerDecision,
   runPlannerCycles,
   validatePlannerDecision,
+  validatePlannerDecisionStructure,
   plannerDecisionJsonSchema,
+  plannerDecisionSimpleJsonSchema,
   buildPlannerPromptPayload,
   compactPlannerStateForLlm,
   compactSkillsForLlm,
   compactHistoryForLlm,
   createAiRateLimiter,
+  configuredSemanticGuardMode,
   configuredRecoveryMode,
   normalizePlannerDecisionArgs,
   resolveCollectTargetAlias,
@@ -115,6 +118,42 @@ function createRunnerContext ({ planOk = true, executeOk = true, retryable = fal
     skillRegistry: registry,
     stateReporter: { getPlannerSnapshot: () => ({ online: true, activeSkill: null }) },
     activeSkill: null
+  }
+}
+
+function createBasicPlannerContext ({ onPlan = () => {}, onRun = () => {}, plannerState = {} } = {}) {
+  const registry = createSkillRegistry({ defaultContext: { bot: {}, stateReporter: {} } })
+  const definitions = [
+    { id: 'movement.come_here', inputSchema: {}, risk: 'low' },
+    { id: 'movement.stop', inputSchema: {}, risk: 'low' },
+    { id: 'state.snapshot', inputSchema: {}, risk: 'low' },
+    { id: 'state.planner_snapshot', inputSchema: {}, risk: 'low' },
+    { id: 'collection.collect', inputSchema: { target: 'string', count: 'number optional' }, risk: 'medium' },
+    { id: 'crafting.craft', inputSchema: { target: 'string', count: 'number optional' }, risk: 'medium' }
+  ]
+
+  for (const definition of definitions) {
+    registry.register({
+      ...definition,
+      description: definition.id,
+      run: (args) => {
+        onRun({ skill: definition.id, args })
+        return actionOk(definition.id, `${definition.id} ok`, { args })
+      }
+    })
+  }
+
+  const originalPlan = registry.plan
+  registry.plan = async (skill, args, context) => {
+    onPlan({ skill, args, context })
+    return originalPlan(skill, args, context)
+  }
+
+  return {
+    skillRegistry: registry,
+    stateReporter: { getPlannerSnapshot: () => ({ online: true, activeSkill: null, ...plannerState }) },
+    activeSkill: null,
+    config: { ai: { provider: 'rule_based' } }
   }
 }
 
@@ -328,6 +367,7 @@ test('rule_based cobre comandos naturais basicos', async () => {
   const skills = plannerTools()
   const cases = [
     ['vem aqui', 'movement.come_here', {}],
+    ['venha aqui', 'movement.come_here', {}],
     ['venha', 'movement.come_here', {}],
     ['me segue', 'movement.follow_owner', {}],
     ['para', 'movement.stop', {}],
@@ -335,10 +375,12 @@ test('rule_based cobre comandos naturais basicos', async () => {
     ['estado', 'state.snapshot', {}],
     ['status', 'state.snapshot', {}],
     ['pega madeira', 'collection.collect', { target: 'madeira', count: 1 }],
+    ['colete madeira', 'collection.collect', { target: 'madeira', count: 1 }],
     ['coleta madeira', 'collection.collect', { target: 'madeira', count: 1 }],
     ['coleta 3 pedras', 'collection.collect', { target: 'pedra', count: 3 }],
     ['minera carvao', 'collection.collect', { target: 'carvao', count: 1 }],
     ['faz crafting table', 'crafting.craft', { target: 'crafting_table', count: 1 }],
+    ['faca crafting table', 'crafting.craft', { target: 'crafting_table', count: 1 }],
     ['crafta mesa de trabalho', 'crafting.craft', { target: 'crafting_table', count: 1 }],
     ['faz tochas', 'crafting.craft', { target: 'torch', count: 1 }],
     ['pega drops', 'drops.collect', {}],
@@ -383,6 +425,40 @@ test('rule_based pergunta em ambiguidade e quando skill nao existe', async () =>
   })
   assert.equal(unavailable.intent, 'ask_user')
   assert.match(unavailable.askUser, /nao esta disponivel/)
+})
+
+test('pipeline bot monta planos basicos com args normalizados antes do plan', async () => {
+  const cases = [
+    ['bot venha aqui', ['movement.come_here'], {}],
+    ['bot vem aqui', ['movement.come_here'], {}],
+    ['bot pare', ['movement.stop'], {}],
+    ['bot estado', ['state.snapshot', 'state.planner_snapshot'], {}],
+    ['bot colete madeira', ['collection.collect'], { target: 'oak_log', count: 1 }],
+    ['bot faça crafting table', ['crafting.craft'], { target: 'crafting_table', count: 1 }]
+  ]
+
+  for (const [rawMessage, expectedSkills, expectedArgs] of cases) {
+    const planned = []
+    const context = createBasicPlannerContext({
+      onPlan: entry => planned.push(entry),
+      plannerState: { allowedActions: { collectTargets: ['oak_log'], collectCategories: ['wood'] } }
+    })
+    const response = await runPlannerCycles({
+      userMessage: parseBotCommand(rawMessage),
+      context,
+      survivalGuard: { assess: () => ({ severity: 'low' }) },
+      decide: args => decideNextAction({
+        ...args,
+        config: { ai: { provider: 'rule_based' } }
+      })
+    })
+
+    assert.equal(response.ok, true, rawMessage)
+    assert(expectedSkills.includes(response.decision.nextAction.skill), rawMessage)
+    assert.deepEqual(response.decision.nextAction.args, expectedArgs, rawMessage)
+    assert.deepEqual(planned[0].args, expectedArgs, rawMessage)
+    assert.equal(response.plan.ok, true, rawMessage)
+  }
 })
 
 test('schema rejeita skill inexistente e nextAction invalido', () => {
@@ -488,6 +564,26 @@ test('schema de planner decision expoe JSON Schema com skills registradas', () =
   const depositSchema = actionSchema.oneOf.find(entry => entry.properties.skill.enum.includes('containers.deposit'))
   assert.deepEqual(depositSchema.properties.args.oneOf[0].properties.mode.enum, ['all', 'resources', 'blocks', 'drops'])
   assert.deepEqual(depositSchema.properties.args.oneOf[1].properties.mode.enum, ['target'])
+})
+
+test('schema simples do Ollama aceita args livres e evita oneOf por skill', () => {
+  const schema = plannerDecisionSimpleJsonSchema(plannerTools())
+  assert.equal(schema.type, 'object')
+  const actionSchema = schema.properties.nextAction.anyOf[1]
+  assert.equal(actionSchema.properties.skill.type, 'string')
+  assert(actionSchema.properties.skill.enum.includes('movement.come_here'))
+  assert.equal(actionSchema.properties.args.additionalProperties, true)
+  assert.equal('oneOf' in actionSchema, false)
+
+  const structurallyValid = makePlannerDecision({
+    intent: 'execute_skill',
+    userGoal: 'coletar madeira',
+    nextAction: { skill: 'collection.collect', args: { target: 'wood', anyExtra: true } },
+    reasonSummary: 'coletar',
+    confidence: 0.8
+  })
+  const structural = validatePlannerDecisionStructure(structurallyValid, { skills: plannerTools() })
+  assert.equal(structural.ok, true)
 })
 
 test('ollama provider aceita decisao valida usando fetch mockado', async () => {
@@ -742,7 +838,7 @@ test('ollama provider nao executa quando JSON e invalido', async () => {
   })
 
   const response = await runPlannerCycles({
-    userMessage: 'estado',
+    userMessage: 'organize minha base',
     context: {
       skillRegistry: registry,
       stateReporter: { getPlannerSnapshot: () => ({ online: true }) },
@@ -834,7 +930,7 @@ test('ollama provider rejeita args invalido sem executar', async () => {
   assert.match(decision.askUser, /Provider ollama indisponivel|decisao valida/i)
 })
 
-test('ollama provider trata resposta vazia e timeout sem executar', async () => {
+test('ollama provider usa fallback basico em resposta vazia e timeout para comando basico', async () => {
   const empty = await decideNextAction({
     userMessage: 'estado',
     plannerState: { online: true },
@@ -846,7 +942,9 @@ test('ollama provider trata resposta vazia e timeout sem executar', async () => 
       json: async () => ({ message: { content: '' } })
     })
   })
-  assert.equal(empty.intent, 'ask_user')
+  assert.equal(empty.intent, 'execute_skill')
+  assert.equal(empty.nextAction.skill, 'state.snapshot')
+  assert.match(empty.planner.providerFallback, /rule_based_basic/)
 
   const timedOut = await decideNextAction({
     userMessage: 'estado',
@@ -859,8 +957,9 @@ test('ollama provider trata resposta vazia e timeout sem executar', async () => 
       throw error
     }
   })
-  assert.equal(timedOut.intent, 'ask_user')
-  assert.match(timedOut.askUser, /timeout|Provider ollama indisponivel/i)
+  assert.equal(timedOut.intent, 'execute_skill')
+  assert.equal(timedOut.nextAction.skill, 'state.snapshot')
+  assert.match(timedOut.planner.providerFallback, /rule_based_basic/)
 })
 
 test('ollama JSON invalido repetido cai para fallback configurado', async () => {
@@ -1173,6 +1272,11 @@ test('argument normalizer retorna warnings e bloqueia args fatais', () => {
   assert.deepEqual(stop.decision.nextAction.args, {})
   assert(stop.warnings.some(warning => /args extras/.test(warning)))
 
+  const comeHere = normalizePlannerDecisionArgs(plannerExecuteDecision('movement.come_here', { target: 'owner', distance: 3 }), { skills: plannerTools() })
+  assert.equal(comeHere.changed, true)
+  assert.deepEqual(comeHere.decision.nextAction.args, {})
+  assert(comeHere.warnings.some(warning => /movement\.come_here nao aceita argumentos/.test(warning)))
+
   const collect = normalizePlannerDecisionArgs(plannerExecuteDecision('collection.collect', { item: 'tronco de carvalho', amount: '2' }), {
     skills: plannerTools(),
     plannerState: { allowedActions: { collectTargets: ['oak_log'] } }
@@ -1291,6 +1395,7 @@ test('runner bloqueia decisao semanticamente incoerente antes de minerar', async
       },
       survivalGuard: { assess: () => ({ severity: 'low' }) },
       dryRun: false,
+      env: { MINEGPT_AI_SEMANTIC_GUARD: 'strict' },
       decide: async () => plannerExecuteDecision('collection.collect', { target: 'coal_ore', count: 1 }, {
         userGoal: userMessage,
         risk: 'medium'
@@ -1303,6 +1408,43 @@ test('runner bloqueia decisao semanticamente incoerente antes de minerar', async
 
   assert.equal(planned, 0)
   assert.equal(executed, 0)
+})
+
+test('semantic guard em warn nao bloqueia plano basico', async () => {
+  assert.equal(configuredSemanticGuardMode({}, {}), 'warn')
+  let planned = 0
+  const registry = createSkillRegistry()
+  registry.register({
+    id: 'collection.collect',
+    description: 'coletar',
+    inputSchema: { target: 'string', count: 'number optional' },
+    risk: 'medium',
+    run: () => actionOk('collection.collect', 'coletado')
+  })
+  const originalPlan = registry.plan
+  registry.plan = async (skill, args, context) => {
+    planned++
+    return originalPlan(skill, args, context)
+  }
+
+  const response = await runPlannerCycles({
+    userMessage: 'venha aqui',
+    context: {
+      skillRegistry: registry,
+      stateReporter: { getPlannerSnapshot: () => ({ online: true }) },
+      activeSkill: null
+    },
+    survivalGuard: { assess: () => ({ severity: 'low' }) },
+    dryRun: true,
+    env: { MINEGPT_AI_SEMANTIC_GUARD: 'warn' },
+    decide: async () => plannerExecuteDecision('collection.collect', { target: 'coal_ore', count: 1 }, {
+      userGoal: 'venha aqui',
+      risk: 'medium'
+    })
+  })
+
+  assert.equal(response.status, 'dry_run')
+  assert.equal(planned, 1)
 })
 
 test('runner nao aceita movement.stop para frase de direcao para frente', async () => {
@@ -1330,6 +1472,7 @@ test('runner nao aceita movement.stop para frase de direcao para frente', async 
     },
     survivalGuard: { assess: () => ({ severity: 'low' }) },
     dryRun: false,
+    env: { MINEGPT_AI_SEMANTIC_GUARD: 'strict' },
     decide: async () => plannerExecuteDecision('movement.stop', {}, {
       userGoal: 'caminhe 5 blocos para frente',
       risk: 'low'

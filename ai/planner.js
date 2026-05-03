@@ -1,7 +1,15 @@
 const { getPlannerProvider, getFallbackPlannerProvider } = require('./providers')
-const { askUserDecision, normalizeText, validateOrAsk } = require('./providers/provider-utils')
+const { askUserDecision, normalizeText, traceLog, validateOrAsk } = require('./providers/provider-utils')
+const ruleBasedProvider = require('./providers/rule-based-provider')
 const { defaultAiRateLimiter, getAiMaxCallsPerMinute } = require('./planner-limits')
 const { getLocalLlmProfile } = require('./local-llm-profiles')
+
+const BASIC_CONTROL_FALLBACK_SKILLS = new Set([
+  'movement.come_here',
+  'movement.stop',
+  'state.snapshot',
+  'state.planner_snapshot'
+])
 
 function debugEnabled (env = process.env) {
   return env.MINEGPT_AI_DEBUG === '1'
@@ -26,6 +34,32 @@ function providerFailureMeta ({ providerName, error, fallbackProviderName = null
 function ollamaWarmupInProgress (config = {}) {
   const runtime = config.ai?.ollamaRuntime
   return runtime?.status === 'warming'
+}
+
+function canUseBasicControlFallback (error) {
+  return ['timeout', 'invalid_json', 'empty_response', 'json_with_extra_text'].includes(error?.code)
+}
+
+async function tryBasicControlFallback ({ userMessage, plannerState, skills, history, config, env, signal }) {
+  const fallbackDecision = await ruleBasedProvider.decideNextAction({
+    userMessage,
+    plannerState,
+    skills,
+    history,
+    config,
+    env,
+    signal
+  })
+  const skill = fallbackDecision?.nextAction?.skill
+  if (fallbackDecision.intent !== 'execute_skill' || !BASIC_CONTROL_FALLBACK_SKILLS.has(skill)) return null
+
+  return {
+    ...fallbackDecision,
+    planner: {
+      ...fallbackDecision.planner,
+      mode: 'rule_based_basic_fallback'
+    }
+  }
 }
 
 async function decideNextAction ({
@@ -53,6 +87,14 @@ async function decideNextAction ({
     model: profile.model,
     profile: profile.name,
     timeoutMs: profile.timeoutMs
+  })
+  traceLog(env, 'provider', {
+    requested: provider.requestedName || provider.name,
+    effective: provider.name,
+    fallbackReason: provider.fallbackReason || null,
+    configuredFallback: config.ai?.fallbackProvider || config.ai?.fallback_provider || env.MINEGPT_AI_FALLBACK_PROVIDER || null,
+    model: profile.model,
+    profile: profile.name
   })
 
   const shouldRateLimit = provider.name === 'ollama' && (!fetch || rateLimiter !== defaultAiRateLimiter)
@@ -82,6 +124,13 @@ async function decideNextAction ({
 
   try {
     decision = await provider.decideNextAction({ userMessage, plannerState, skills, history, config, env, fetch, signal })
+    traceLog(env, 'provider_result', {
+      requested: provider.requestedName || provider.name,
+      effective: decision?.planner?.mode || provider.name,
+      fallbackUsed: false,
+      intent: decision?.intent,
+      skill: decision?.nextAction?.skill || null
+    })
     debugLog(env, 'provider_result', {
       requested: provider.requestedName || provider.name,
       effective: decision?.planner?.mode || provider.name,
@@ -144,11 +193,44 @@ async function decideNextAction ({
         intent: fallbackDecision.intent,
         skill: fallbackDecision.nextAction?.skill || null
       })
+      traceLog(env, 'provider_fallback', {
+        requested: provider.name,
+        effective: fallbackDecision.planner?.mode || fallbackProvider.name,
+        reason: providerFallback,
+        intent: fallbackDecision.intent,
+        skill: fallbackDecision.nextAction?.skill || null
+      })
       return {
         ...fallbackDecision,
         planner: {
           ...fallbackDecision.planner,
           providerFallback
+        }
+      }
+    }
+
+    if (provider.name === 'ollama' && canUseBasicControlFallback(error)) {
+      const basicFallbackDecision = await tryBasicControlFallback({ userMessage, plannerState, skills, history, config, env, signal })
+      if (basicFallbackDecision) {
+        const providerFallback = providerFailureMeta({
+          providerName: provider.name,
+          error,
+          fallbackProviderName: 'rule_based_basic',
+          finalProviderName: basicFallbackDecision.planner?.mode || 'rule_based_basic_fallback'
+        })
+        traceLog(env, 'provider_fallback', {
+          requested: provider.name,
+          effective: basicFallbackDecision.planner?.mode || 'rule_based_basic_fallback',
+          reason: providerFallback,
+          intent: basicFallbackDecision.intent,
+          skill: basicFallbackDecision.nextAction?.skill || null
+        })
+        return {
+          ...basicFallbackDecision,
+          planner: {
+            ...basicFallbackDecision.planner,
+            providerFallback
+          }
         }
       }
     }

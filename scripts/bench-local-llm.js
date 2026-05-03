@@ -1,7 +1,11 @@
 const { performance } = require('perf_hooks')
 const { TextDecoder } = require('util')
 const { getLocalLlmProfile } = require('../ai/local-llm-profiles')
-const { plannerDecisionJsonSchema, validatePlannerDecision } = require('../ai/planner-schema')
+const {
+  plannerDecisionSimpleJsonSchema,
+  validatePlannerDecision,
+  validatePlannerDecisionStructure
+} = require('../ai/planner-schema')
 const { normalizePlannerDecisionArgs } = require('../ai/argument-normalizer')
 const {
   buildSystemPrompt,
@@ -13,7 +17,12 @@ const {
 } = require('../ai/providers/ollama-provider')
 
 const SCENARIOS = [
+  'bot venha aqui',
+  'bot vem aqui',
   'bot pare',
+  'bot estado',
+  'bot colete madeira',
+  'bot faça crafting table',
   'bot caminhe 5 blocos para frente',
   'bot vá para frente',
   'bot venha para mim',
@@ -403,7 +412,7 @@ async function checkOllamaReady ({ profile, fetch }) {
 
 async function runScenario ({ scenario, profile, skills }) {
   const plannerState = fakePlannerState()
-  const schema = plannerDecisionJsonSchema(skills, { plannerState })
+  const schema = plannerDecisionSimpleJsonSchema(skills)
   const payload = buildPlannerPromptPayload({
     userMessage: scenario,
     plannerState,
@@ -450,10 +459,12 @@ async function runScenario ({ scenario, profile, skills }) {
   const totalMs = performance.now() - startedAt
   const timings = tryReadResponseTimings(responseData)
 
+  let rawDecision
   let decision
   let normalization
   try {
-    normalization = normalizePlannerDecisionArgs(parseStrictJsonObject(rawContent), { skills, plannerState })
+    rawDecision = parseStrictJsonObject(rawContent)
+    normalization = normalizePlannerDecisionArgs(rawDecision, { skills, plannerState })
     decision = normalization.decision
   } catch (error) {
     return {
@@ -475,23 +486,39 @@ async function runScenario ({ scenario, profile, skills }) {
     }
   }
 
+  const initialValidation = validatePlannerDecisionStructure(rawDecision, { skills, plannerState })
   const validation = validatePlannerDecision(decision, { skills, plannerState })
   const skillExists = decision.intent !== 'execute_skill' || skills.some(skill => skill.id === decision.nextAction?.skill)
   const coherence = checkArgumentCoherence(scenario, decision)
   const planOk = validation.ok && skillExists && (decision.intent !== 'execute_skill' || coherence.ok)
   const dryRunWouldPass = planOk
+  const statusFinal = planOk
+    ? 'plan_ok'
+    : !initialValidation.ok
+        ? 'initial_validation_failed'
+        : !validation.ok
+            ? 'final_validation_failed'
+            : !skillExists
+                ? 'skill_missing'
+                : 'semantic_or_plan_failed'
 
   return {
     scenario,
     ok: planOk,
     jsonValid: true,
     decisionValid: validation.ok,
+    initialValidationOk: initialValidation.ok,
     skillExists,
     argsCoherent: coherence.ok,
     planOk,
     dryRunWouldPass,
     fallbackUsed: false,
     providerEffective: 'ollama',
+    rawSkill: rawDecision?.nextAction?.skill || null,
+    normalizedSkill: decision.nextAction?.skill || null,
+    argsBefore: rawDecision?.nextAction?.args || null,
+    argsAfter: decision.nextAction?.args || null,
+    statusFinal,
     normalizedChanged: Boolean(normalization?.changed),
     normalizationWarnings: normalization?.warnings || [],
     totalMs,
@@ -502,6 +529,7 @@ async function runScenario ({ scenario, profile, skills }) {
     nextAction: decision.nextAction || null,
     intent: decision.intent,
     errors: [
+      ...initialValidation.errors,
       ...validation.errors,
       ...(skillExists ? [] : [`skill inexistente: ${decision.nextAction?.skill}`]),
       ...(coherence.ok ? [] : [`argumentos incoerentes: ${coherence.detail}`])
@@ -573,8 +601,10 @@ async function benchLocalLlm () {
     results.push(result)
     const status = result.ok ? 'ok' : 'falha'
     const detail = result.error || result.errors?.join('; ') || `${result.intent}${result.skill ? ` -> ${result.skill}` : ''}`
-    const actionText = result.jsonValid ? ` | nextAction=${JSON.stringify(result.nextAction || null)}` : ''
-    const normalizedText = result.normalizedChanged ? ` | normalized=${result.normalizationWarnings.join(', ') || 'sim'}` : ''
+    const actionText = result.jsonValid
+      ? ` | raw=${result.rawSkill || 'null'} ${JSON.stringify(result.argsBefore || null)} | normalized=${result.normalizedSkill || 'null'} ${JSON.stringify(result.argsAfter || null)} | plan.ok=${Boolean(result.planOk)} | final=${result.statusFinal}`
+      : ''
+    const normalizedText = result.normalizedChanged ? ` | normalization=${result.normalizationWarnings.join(', ') || 'sim'}` : ''
     console.log(`- ${scenario}: ${status} | ${formatMs(result.totalMs)} | ${detail}${actionText}${normalizedText}`)
   }
 

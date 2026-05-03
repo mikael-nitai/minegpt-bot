@@ -1,11 +1,19 @@
 const { decideNextAction, normalizeText } = require('./planner')
-const { validatePlannerDecision, makePlannerDecision, plannerDecisionJsonSchema } = require('./planner-schema')
+const {
+  validatePlannerDecision,
+  validatePlannerDecisionStructure,
+  makePlannerDecision,
+  plannerDecisionJsonSchema,
+  plannerDecisionSimpleJsonSchema
+} = require('./planner-schema')
 const { skillToPlannerTool, skillsToPlannerTools, skillRegistryToPlannerTools } = require('./tool-adapter')
 const { parseBotCommand, parsePlannerControlCommand, runPlannerCommand, summarizeActionResult, survivalBlocksPlan } = require('./planner-executor')
 const {
   actionRequiresConfirmation,
   chooseLocalRecoveryAction,
   configuredRecoveryMode,
+  configuredSemanticGuardMode,
+  normalizeSemanticGuardMode,
   runPlannerCycles,
   safePlannerState
 } = require('./planner-runner')
@@ -38,8 +46,10 @@ module.exports = {
   resolveCollectTargetAlias,
   resolveItemAlias,
   validatePlannerDecision,
+  validatePlannerDecisionStructure,
   makePlannerDecision,
   plannerDecisionJsonSchema,
+  plannerDecisionSimpleJsonSchema,
   skillToPlannerTool,
   skillsToPlannerTools,
   skillRegistryToPlannerTools,
@@ -51,6 +61,8 @@ module.exports = {
   actionRequiresConfirmation,
   chooseLocalRecoveryAction,
   configuredRecoveryMode,
+  configuredSemanticGuardMode,
+  normalizeSemanticGuardMode,
   runPlannerCycles,
   safePlannerState
 }

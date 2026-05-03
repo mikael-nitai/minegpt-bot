@@ -1,8 +1,9 @@
 const fs = require('fs')
 const path = require('path')
 const { getLocalLlmProfile } = require('../local-llm-profiles')
-const { plannerDecisionJsonSchema, validatePlannerDecision } = require('../planner-schema')
+const { plannerDecisionSimpleJsonSchema, validatePlannerDecisionStructure } = require('../planner-schema')
 const { buildPlannerPromptPayload } = require('../planner-prompt-payload')
+const { traceLog } = require('./provider-utils')
 
 class OllamaProviderError extends Error {
   constructor (message, options = {}) {
@@ -354,8 +355,11 @@ async function requestAndParseDecision ({ profile, messages, schema, skills, pla
     profile: profile.name
   })
   const rawContent = contentFromOllamaResponse(responseData)
+  traceLog(env, 'raw_llm_output', { rawContent })
   const decision = parseStrictJsonObject(rawContent)
-  const validation = validatePlannerDecision(decision, { skills, plannerState })
+  traceLog(env, 'decision_parsed', { decision })
+  const validation = validatePlannerDecisionStructure(decision, { skills, plannerState })
+  traceLog(env, 'validation_initial', { ok: validation.ok, errors: validation.errors })
   if (!validation.ok) {
     const error = new OllamaProviderError(`decisao invalida do Ollama: ${validation.errors.join('; ')}`, {
       code: 'invalid_decision',
@@ -382,7 +386,7 @@ async function decideNextAction ({
   env = process.env
 }) {
   const profile = getLocalLlmProfile(config)
-  const schema = plannerDecisionJsonSchema(skills, { plannerState })
+  const schema = plannerDecisionSimpleJsonSchema(skills)
   const payload = buildPlannerPromptPayload({ userMessage, plannerState, skills, history, schema, profile })
   const messages = [
     { role: 'system', content: buildSystemPrompt() },

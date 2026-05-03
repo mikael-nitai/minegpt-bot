@@ -9,6 +9,21 @@ function normalizeText (text) {
     .trim()
 }
 
+function traceEnabled (env = process.env) {
+  return env.MINEGPT_AI_TRACE === '1'
+}
+
+function traceLog (env = process.env, event, details = {}) {
+  if (!traceEnabled(env)) return
+  let serialized
+  try {
+    serialized = JSON.stringify(details)
+  } catch (error) {
+    serialized = JSON.stringify({ serializationError: error.message })
+  }
+  console.log(`[minegpt-ai-trace] ${event}: ${serialized}`)
+}
+
 function hasAny (text, terms) {
   return terms.some(term => text.includes(term))
 }
@@ -104,6 +119,8 @@ function normalizeDepositModeAlias (value) {
 
 module.exports = {
   normalizeText,
+  traceEnabled,
+  traceLog,
   hasAny,
   skillExists,
   executionDecision,
