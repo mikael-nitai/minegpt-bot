@@ -48,7 +48,7 @@ index.js
 - `skills.js`: contrato planejavel das skills, `plan()`, validacao, pre/post-condicoes e timeout.
 - `action-result.js`: formato padrao de resultado de acoes.
 - `state.js`: snapshot estruturado para debug e snapshot compacto para planner.
-- `ai/`: fundacao da camada de planner; valida decisao, adapta skills para ferramentas seguras, executa ciclos curtos pelo runner e possui planner mockado sem API externa.
+- `ai/`: camada de planner; seleciona provider local, valida decisao, normaliza argumentos, adapta skills para ferramentas seguras e executa ciclos curtos pelo runner. O provider padrao e `ollama`; `rule_based` e fallback/debug; `mock` e regressao/debug.
 - `ai/argument-normalizer.js`: normaliza argumentos de decisoes do provider antes de `SkillRegistry.plan()`, com warnings, erros recuperaveis e erros fatais.
 - `ai/semantic-aliases.js`: aliases semanticos para itens/blocos/modos usados pelo planner e normalizer.
 - `docs/ARCHITECTURE_REFACTOR_PLAN.md`: registro do plano, decisoes e pendencias da refatoracao arquitetural do planner.

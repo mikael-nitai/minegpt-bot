@@ -2,32 +2,35 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const { createSkillRegistry } = require('../skills')
 const { actionOk, actionFail } = require('../action-result')
+const { decideNextAction } = require('../ai/planner')
+const { DEFAULT_PROVIDER, getPlannerProvider } = require('../ai/providers')
+const { DEFAULT_LLM_PROFILE, getLocalLlmProfile } = require('../ai/local-llm-profiles')
 const {
-  decideNextAction,
-  DEFAULT_PROVIDER,
-  DEFAULT_LLM_PROFILE,
-  getLocalLlmProfile,
-  getPlannerProvider,
   makePlannerDecision,
-  runPlannerCycles,
   validatePlannerDecision,
   validatePlannerDecisionStructure,
   plannerDecisionJsonSchema,
-  plannerDecisionSimpleJsonSchema,
+  plannerDecisionSimpleJsonSchema
+} = require('../ai/planner-schema')
+const {
+  runPlannerCycles,
+  configuredSemanticGuardMode,
+  configuredRecoveryMode
+} = require('../ai/planner-runner')
+const {
   buildPlannerPromptPayload,
   compactPlannerStateForLlm,
   compactSkillsForLlm,
-  compactHistoryForLlm,
-  createAiRateLimiter,
-  configuredSemanticGuardMode,
-  configuredRecoveryMode,
-  normalizePlannerDecisionArgs,
+  compactHistoryForLlm
+} = require('../ai/planner-prompt-payload')
+const { createAiRateLimiter } = require('../ai/planner-limits')
+const { normalizePlannerDecisionArgs } = require('../ai/argument-normalizer')
+const {
   resolveCollectTargetAlias,
   resolveContainerModeAlias,
-  resolveItemAlias,
-  skillsToPlannerTools,
-  skillRegistryToPlannerTools
-} = require('../ai')
+  resolveItemAlias
+} = require('../ai/semantic-aliases')
+const { skillsToPlannerTools, skillRegistryToPlannerTools } = require('../ai/tool-adapter')
 const { requestOllamaChat } = require('../ai/providers/ollama-provider')
 const {
   parseBotCommand,

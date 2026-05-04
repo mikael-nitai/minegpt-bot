@@ -18,8 +18,8 @@ O bot ja possui:
 - crafting direto seguro e cadeia curta para itens basicos;
 - interacao com containers: scan, memoria, busca, retirada, deposito e classificacao logistica semantica;
 - Survival Guard com diagnostico, pedidos de ajuda, comida automatica e reacoes curtas;
-- skill registry, ActionResult e snapshot de estado para futuro planner/IA.
-- fundacao de planner em `ai/`, ainda mockada/deterministica, com runner de ciclos curtos e sem API externa.
+- skill registry, ActionResult e snapshot de estado para planner/IA.
+- planner em `ai/` com provider local Ollama por padrao, fallback `rule_based`, provider `mock` para regressao/debug e runner de ciclos curtos.
 
 ## Requisitos
 
@@ -231,7 +231,7 @@ O prefixo experimental `bot` usa providers locais em `ai/`, sem API externa. O i
 
 Por padrao, o runner executa no maximo uma acao por comando. A estrutura interna ja aceita ciclos curtos controlados para testes futuros, com bloqueios por risco, survival, skill ativa e repeticao.
 
-Esses comandos validam o fluxo chat -> planner -> SkillRegistry -> ActionResult. O planner ainda e deterministico e limitado.
+Esses comandos validam o fluxo chat -> planner -> SkillRegistry -> ActionResult. O planner atual usa provider local configuravel; por padrao, linguagem natural vai ao Ollama e passa por validacao, normalizacao, guardrails e `SkillRegistry.plan()` antes de executar.
 
 Para ver o que o planner faria sem executar nada:
 

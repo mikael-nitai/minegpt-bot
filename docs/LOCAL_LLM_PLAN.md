@@ -1,5 +1,9 @@
 # Local LLM Plan
 
+Status: documento historico.
+
+Este arquivo registra o planejamento que levou a implementacao do provider Ollama local. Ele contem etapas, defaults e observacoes antigas que ja foram superadas. Para o estado operacional atual, use `README.md`, `AGENT_MAP.md`, `docs/CLEANUP_AUDIT.md` e o codigo em `ai/` como fonte primaria.
+
 Plano para integrar um LLM local via Ollama na camada `ai/` sem alterar o comportamento atual do bot nesta etapa.
 
 Esta etapa e apenas de auditoria e desenho. Nao implementa provider Ollama, nao chama Ollama, nao baixa modelo e nao integra API paga.
